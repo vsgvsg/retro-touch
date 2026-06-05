@@ -413,6 +413,7 @@ class Editor:
         self._base = scale_base(image, self.scale)
         self._dirty = True
         self._cells = []          # crop thumbnails PhotoImage references
+        self._resize_job = None
         
         # Build Window
         from tkinter import ttk
@@ -451,10 +452,11 @@ class Editor:
         body.pack(side="top", fill="both", expand=True, padx=16, pady=4)
 
         # Left View Pane
-        photo_pane = ttk.Frame(body)
-        photo_pane.pack(side="left", fill="both", expand=True)
-        photo_pane.bind("<Configure>", self._on_pane_configure)
-        self.canvas = tk.Label(photo_pane, bg=BG)
+        self.photo_pane = ttk.Frame(body)
+        self.photo_pane.pack(side="left", fill="both", expand=True)
+        self.photo_pane.pack_propagate(False)
+        self.photo_pane.bind("<Configure>", self._on_pane_configure)
+        self.canvas = tk.Label(self.photo_pane, bg=BG)
         self.canvas.pack(expand=True)
         
         # Bind mouse events to the image viewer
@@ -757,6 +759,14 @@ class Editor:
         self._draw_overlay()
         self._scroll_active_into_view()
 
+    def _cancel_resize_job(self):
+        if self._resize_job is not None:
+            try:
+                self.root.after_cancel(self._resize_job)
+            except Exception:
+                pass
+            self._resize_job = None
+
     def _on_progress_click(self, event):
         width = self.progress.winfo_width()
         if width <= 0 or self.total_scans == 0:
@@ -765,21 +775,25 @@ class Editor:
         target = min(self.total_scans - 1, int(frac * self.total_scans))
         if target == self.scan_idx:
             return
+        self._cancel_resize_job()
         self.save()
         self.next_request = f"jump_{target}"
         self.root.destroy()
 
     def _next(self):
+        self._cancel_resize_job()
         self.crop_all()
         self.next_request = "next"
         self.root.destroy()
 
     def _next_no_crop(self):
+        self._cancel_resize_job()
         self.save()
         self.next_request = "next"
         self.root.destroy()
 
     def _prev_no_crop(self):
+        self._cancel_resize_job()
         self.save()
         self.next_request = "prev"
         self.root.destroy()
@@ -788,6 +802,7 @@ class Editor:
         self._prev_no_crop()
 
     def _quit(self):
+        self._cancel_resize_job()
         self.save()
         self.next_request = "quit"
         self.root.destroy()
@@ -817,6 +832,8 @@ class Editor:
 
     def _on_pane_configure(self, event):
         """Handle viewer frame resize dynamically updating image fit."""
+        if event.widget != self.photo_pane:
+            return
         w, h = event.width, event.height
         if w < 100 or h < 100:
             return
@@ -824,13 +841,29 @@ class Editor:
         target_w = w - 8
         target_h = h - 8
         if abs(target_w - self.PHOTO_W) > 5 or abs(target_h - self.PHOTO_H) > 5:
-            self.PHOTO_W = target_w
-            self.PHOTO_H = target_h
-            h_img, w_img = self.image.shape[:2]
-            self.scale = min(self.PHOTO_W / w_img, self.PHOTO_H / h_img, 1.0)
-            self._base = scale_base(self.image, self.scale)
-            self._dirty = True
-            self._draw_overlay()
+            if self._resize_job is not None:
+                try:
+                    self.root.after_cancel(self._resize_job)
+                except Exception:
+                    pass
+            self._resize_job = self.root.after(100, self._do_resize, w, h)
+
+    def _do_resize(self, w, h):
+        self._resize_job = None
+        try:
+            if not self.root.winfo_exists():
+                return
+        except Exception:
+            return
+        target_w = w - 8
+        target_h = h - 8
+        self.PHOTO_W = target_w
+        self.PHOTO_H = target_h
+        h_img, w_img = self.image.shape[:2]
+        self.scale = min(self.PHOTO_W / w_img, self.PHOTO_H / h_img, 1.0)
+        self._base = scale_base(self.image, self.scale)
+        self._dirty = True
+        self._draw_overlay()
 
     def _show_shortcuts(self):
         """Display a clean Toplevel modal window listing all keyboard shortcuts."""
