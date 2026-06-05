@@ -133,17 +133,45 @@ def detect_photos(image: np.ndarray, min_area_frac: float = 0.01) -> list[Box]:
 # Cropper
 # ---------------------------------------------------------------------------
 def crop_box(image: np.ndarray, box: Box) -> np.ndarray:
-    """Deskew the box, crop the upright rectangle, then apply orientation."""
+    """Deskew the box, crop the upright rectangle, then apply orientation.
+    
+    Optimized to crop a local bounding sub-image before rotation, preventing
+    expensive full-resolution image warping.
+    """
     cx, cy = box.center
     bw, bh = int(round(box.size[0])), int(round(box.size[1]))
     if bw < 1 or bh < 1:
         raise ValueError("box has non-positive size")
 
     h, w = image.shape[:2]
-    M = cv2.getRotationMatrix2D((cx, cy), box.angle, 1.0)
-    rotated = cv2.warpAffine(image, M, (w, h), flags=cv2.INTER_CUBIC,
+    
+    # 1. Compute a safe bounding box of the rotated rect to crop a sub-image
+    # Diagonal of the box
+    diag = math.sqrt(bw**2 + bh**2)
+    r = diag / 2.0
+    
+    # Add a small margin to be safe against rounding/floating point bounds
+    x_min = max(0, int(math.floor(cx - r - 10)))
+    x_max = min(w, int(math.ceil(cx + r + 10)))
+    y_min = max(0, int(math.floor(cy - r - 10)))
+    y_max = min(h, int(math.ceil(cy + r + 10)))
+    
+    sub_w = x_max - x_min
+    sub_h = y_max - y_min
+    if sub_w < 1 or sub_h < 1:
+        raise ValueError("sub-image crop region is empty")
+        
+    sub_img = image[y_min:y_max, x_min:x_max]
+    
+    # 2. Perform warpAffine on the sub-image
+    sub_cx = cx - x_min
+    sub_cy = cy - y_min
+    M = cv2.getRotationMatrix2D((sub_cx, sub_cy), box.angle, 1.0)
+    rotated = cv2.warpAffine(sub_img, M, (sub_w, sub_h), flags=cv2.INTER_CUBIC,
                              borderMode=cv2.BORDER_REPLICATE)
-    crop = cv2.getRectSubPix(rotated, (bw, bh), (cx, cy))
+    
+    # 3. Extract the upright rectangle from the rotated sub-image
+    crop = cv2.getRectSubPix(rotated, (bw, bh), (sub_cx, sub_cy))
 
     # orientation names which edge is the photo's real top (matching the UI
     # arrow). Rotate so that edge ends up at the top of the output.
