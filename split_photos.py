@@ -452,13 +452,6 @@ class Editor:
         # Fit scan image to fixed pane
         self.PHOTO_W, self.PHOTO_H = 760, 680
         
-        if self._single_mode:
-            h, w = self.image.shape[:2]
-            self.scale = min(self.PHOTO_W / w, self.PHOTO_H / h, 1.0)
-            self._base = scale_base(self.image, self.scale)
-        else:
-            self._load_scan(self.scan_idx)
-            
         self.drag = None          # None | 'move' | 'new' | ('resize', handle)
         self.drag_start = None    # full-coord
         self.next_request = None  # 'next' | 'prev' | 'quit'
@@ -466,6 +459,13 @@ class Editor:
         self._dirty = True
         self._cells = []          # crop thumbnails PhotoImage references
         self._resize_job = None
+
+        if self._single_mode:
+            h, w = self.image.shape[:2]
+            self.scale = min(self.PHOTO_W / w, self.PHOTO_H / h, 1.0)
+            self._base = scale_base(self.image, self.scale)
+        else:
+            self._load_scan(self.scan_idx)
         
         # Build Window
         from tkinter import ttk
