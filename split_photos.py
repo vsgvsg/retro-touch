@@ -418,29 +418,51 @@ BANNER_H = 26  # status banner height in px, drawn above the image
 class Editor:
     """Interactive HighGUI editor for one scan."""
 
-    def __init__(self, image: np.ndarray, boxes: list[Box], scan_path: str, out_dir: str, scan_idx: int = 0, total_scans: int = 1, geometry: str | None = None):
+    def __init__(self, scans_or_image: list[str] | np.ndarray,
+                 out_dir_or_boxes: str | list[Box],
+                 scan_path: str | None = None,
+                 out_dir: str | None = None,
+                 scan_idx: int = 0,
+                 total_scans: int = 1,
+                 geometry: str | None = None):
         import tkinter as tk
         self.tk = tk
-        self.image = image
-        self.boxes = boxes
-        self.scan_path = scan_path
-        self.out_dir = out_dir
-        self.scan_idx = scan_idx
-        self.total_scans = total_scans
-        self.active = 0 if boxes else -1
+        
+        # Determine if we are running in single-image mode (for unit tests)
+        if isinstance(scans_or_image, list) and all(isinstance(x, str) for x in scans_or_image):
+            self.scans = scans_or_image
+            self.out_dir = out_dir_or_boxes
+            self.scan_idx = scan_idx
+            self.total_scans = len(self.scans)
+            self._single_mode = False
+        else:
+            self.scans = [scan_path] if scan_path else []
+            self.image = scans_or_image
+            self.boxes = out_dir_or_boxes
+            self.scan_path = scan_path
+            self.out_dir = out_dir
+            self.scan_idx = scan_idx
+            self.total_scans = total_scans
+            self._single_mode = True
+
+        self.active = 0 if (self._single_mode and self.boxes) else -1
         self._geometry = geometry
         self._card_refs = []
         
         # Fit scan image to fixed pane
         self.PHOTO_W, self.PHOTO_H = 760, 680
-        h, w = image.shape[:2]
-        self.scale = min(self.PHOTO_W / w, self.PHOTO_H / h, 1.0)
         
+        if self._single_mode:
+            h, w = self.image.shape[:2]
+            self.scale = min(self.PHOTO_W / w, self.PHOTO_H / h, 1.0)
+            self._base = scale_base(self.image, self.scale)
+        else:
+            self._load_scan(self.scan_idx)
+            
         self.drag = None          # None | 'move' | 'new' | ('resize', handle)
         self.drag_start = None    # full-coord
         self.next_request = None  # 'next' | 'prev' | 'quit'
         self._preview_open = False
-        self._base = scale_base(image, self.scale)
         self._dirty = True
         self._cells = []          # crop thumbnails PhotoImage references
         self._resize_job = None
@@ -550,6 +572,32 @@ class Editor:
         self.root.bind("<Key-q>", lambda e: self._quit())
         
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _load_scan(self, idx):
+        self._cancel_resize_job()
+        if self._single_mode:
+            return
+
+        self.scan_idx = idx
+        self.scan_path = self.scans[idx]
+        self.image = cv2.imread(self.scan_path)
+        if self.image is None:
+            self.image = np.full((100, 100, 3), 245, dtype=np.uint8)
+            print(f"  ! cannot read {self.scan_path}")
+            
+        boxes = load_metadata(self.scan_path)
+        if boxes is None:
+            boxes = detect_photos(self.image)
+            print(f"{os.path.basename(self.scan_path)}: auto-detected {len(boxes)} photo(s)")
+        else:
+            print(f"{os.path.basename(self.scan_path)}: loaded {len(boxes)} box(es) from metadata")
+        self.boxes = boxes
+        self.active = 0 if self.boxes else -1
+        
+        h, w = self.image.shape[:2]
+        self.scale = min(self.PHOTO_W / w, self.PHOTO_H / h, 1.0)
+        self._base = scale_base(self.image, self.scale)
+        self._dirty = True
 
     # ---- coordinate helpers ----
     def _full(self, x, y):
@@ -850,28 +898,42 @@ class Editor:
         target = min(self.total_scans - 1, int(frac * self.total_scans))
         if target == self.scan_idx:
             return
+        if self._single_mode:
+            return
         self._cancel_resize_job()
         self.save()
-        self.next_request = f"jump_{target}"
-        self.root.destroy()
+        self._load_scan(target)
+        self._show()
 
     def _next(self):
         self._cancel_resize_job()
         self.crop_all()
-        self.next_request = "next"
-        self.root.destroy()
+        if self._single_mode or self.scan_idx == self.total_scans - 1:
+            self.next_request = "next"
+            self.root.destroy()
+            return
+        self._load_scan(self.scan_idx + 1)
+        self._show()
 
     def _next_no_crop(self):
         self._cancel_resize_job()
         self.save()
-        self.next_request = "next"
-        self.root.destroy()
+        if self._single_mode or self.scan_idx == self.total_scans - 1:
+            self.next_request = "next"
+            self.root.destroy()
+            return
+        self._load_scan(self.scan_idx + 1)
+        self._show()
 
     def _prev_no_crop(self):
         self._cancel_resize_job()
         self.save()
-        self.next_request = "prev"
-        self.root.destroy()
+        if self._single_mode or self.scan_idx == 0:
+            self.next_request = "prev"
+            self.root.destroy()
+            return
+        self._load_scan(self.scan_idx - 1)
+        self._show()
 
     def _back(self):
         self._prev_no_crop()
@@ -1022,32 +1084,8 @@ def main(argv: list[str]) -> int:
         print(f"No scans found in {images_dir}")
         return 1
 
-    idx = 0
-    geometry = None
-    while 0 <= idx < len(scans):
-        path = scans[idx]
-        image = cv2.imread(path)
-        if image is None:
-            print(f"  ! cannot read {path}, skipping")
-            idx += 1
-            continue
-        boxes = load_metadata(path)
-        if boxes is None:
-            boxes = detect_photos(image)
-            print(f"{os.path.basename(path)}: auto-detected {len(boxes)} photo(s)")
-        else:
-            print(f"{os.path.basename(path)}: loaded {len(boxes)} box(es) from metadata")
-
-        editor = Editor(image, boxes, path, out_dir, idx, len(scans), geometry=geometry)
-        req, geometry = editor.run()
-        if req == "quit":
-            break
-        elif req == "prev":
-            idx = max(0, idx - 1)
-        elif req.startswith("jump_"):
-            idx = int(req.split("_")[1])
-        else:  # "next"
-            idx += 1
+    editor = Editor(scans, out_dir, idx=0)
+    editor.run()
 
     print("Done.")
     return 0
