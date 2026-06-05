@@ -1084,7 +1084,7 @@ def main(argv: list[str]) -> int:
         print(f"No scans found in {images_dir}")
         return 1
 
-    editor = Editor(scans, out_dir, idx=0)
+    editor = Editor(scans, out_dir, scan_idx=0)
     editor.run()
 
     print("Done.")
