@@ -133,45 +133,17 @@ def detect_photos(image: np.ndarray, min_area_frac: float = 0.01) -> list[Box]:
 # Cropper
 # ---------------------------------------------------------------------------
 def crop_box(image: np.ndarray, box: Box) -> np.ndarray:
-    """Deskew the box, crop the upright rectangle, then apply orientation.
-    
-    Optimized to crop a local bounding sub-image before rotation, preventing
-    expensive full-resolution image warping.
-    """
+    """Deskew the box, crop the upright rectangle, then apply orientation."""
     cx, cy = box.center
     bw, bh = int(round(box.size[0])), int(round(box.size[1]))
     if bw < 1 or bh < 1:
         raise ValueError("box has non-positive size")
 
     h, w = image.shape[:2]
-    
-    # 1. Compute a safe bounding box of the rotated rect to crop a sub-image
-    # Diagonal of the box
-    diag = math.sqrt(bw**2 + bh**2)
-    r = diag / 2.0
-    
-    # Add a small margin to be safe against rounding/floating point bounds
-    x_min = max(0, int(math.floor(cx - r - 10)))
-    x_max = min(w, int(math.ceil(cx + r + 10)))
-    y_min = max(0, int(math.floor(cy - r - 10)))
-    y_max = min(h, int(math.ceil(cy + r + 10)))
-    
-    sub_w = x_max - x_min
-    sub_h = y_max - y_min
-    if sub_w < 1 or sub_h < 1:
-        raise ValueError("sub-image crop region is empty")
-        
-    sub_img = image[y_min:y_max, x_min:x_max]
-    
-    # 2. Perform warpAffine on the sub-image
-    sub_cx = cx - x_min
-    sub_cy = cy - y_min
-    M = cv2.getRotationMatrix2D((sub_cx, sub_cy), box.angle, 1.0)
-    rotated = cv2.warpAffine(sub_img, M, (sub_w, sub_h), flags=cv2.INTER_CUBIC,
+    M = cv2.getRotationMatrix2D((cx, cy), box.angle, 1.0)
+    rotated = cv2.warpAffine(image, M, (w, h), flags=cv2.INTER_CUBIC,
                              borderMode=cv2.BORDER_REPLICATE)
-    
-    # 3. Extract the upright rectangle from the rotated sub-image
-    crop = cv2.getRectSubPix(rotated, (bw, bh), (sub_cx, sub_cy))
+    crop = cv2.getRectSubPix(rotated, (bw, bh), (cx, cy))
 
     # orientation names which edge is the photo's real top (matching the UI
     # arrow). Rotate so that edge ends up at the top of the output.
@@ -300,12 +272,6 @@ def resize_box(box: Box, handle: tuple[int, int], pt: tuple[float, float]) -> No
     box.size[1] = bh
 
 
-def orientation_name(orient: int) -> str:
-    """Map orientation degrees to friendly direction names."""
-    m = {0: "Top", 90: "Right", 180: "Bottom", 270: "Left"}
-    return m.get(int(orient) % 360, f"{orient}°")
-
-
 def _orient_arrow(box: Box) -> tuple[tuple[int, int], tuple[int, int]]:
     """Endpoints (full coords) of an arrow pointing to the box's 'top'."""
     cx, cy = box.center
@@ -319,47 +285,93 @@ def _orient_arrow(box: Box) -> tuple[tuple[int, int], tuple[int, int]]:
     return (int(cx), int(cy)), (int(cx + ux * length), int(cy + uy * length))
 
 
-def scale_base(image: np.ndarray, scale: float) -> np.ndarray:
-    """The expensive full-res resize, done once per scale change (not per frame)."""
-    return cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+def nudge_box(box: "Box", dx: float, dy: float) -> None:
+    """Shift a box's center by (dx, dy) full-coord pixels, in place."""
+    box.center[0] += dx
+    box.center[1] += dy
 
 
-def render(base: np.ndarray, boxes: list[Box], active_idx: int, scale: float) -> np.ndarray:
-    """Draw box overlays onto a copy of the pre-scaled base image."""
-    disp = base.copy()
-    for i, b in enumerate(boxes):
-        rect = ((b.center[0] * scale, b.center[1] * scale),
-                (b.size[0] * scale, b.size[1] * scale), b.angle)
-        pts = cv2.boxPoints(rect).astype(np.int32)
-        color = (0, 255, 0) if i == active_idx else (0, 255, 255)
-        cv2.polylines(disp, [pts], True, color, 2)
-        if i == active_idx:
-            p0, p1 = _orient_arrow(b)
-            cv2.arrowedLine(disp, (int(p0[0] * scale), int(p0[1] * scale)),
-                            (int(p1[0] * scale), int(p1[1] * scale)),
-                            (0, 0, 255), 2, tipLength=0.3)
-    if boxes and 0 <= active_idx < len(boxes):
-        b = boxes[active_idx]
-        txt = f"[{active_idx+1}/{len(boxes)}] angle={b.angle:.1f} orient={b.orientation}"
-    else:
-        txt = f"[0/{len(boxes)}] no active box"
-    # Status banner above the image (separate strip, so it never hides content).
-    banner = np.zeros((BANNER_H, disp.shape[1], 3), np.uint8)
-    cv2.putText(banner, txt, (6, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
-    return cv2.vconcat([banner, disp])
+def tilt_angle(angle: float, delta: float) -> float:
+    """Adjust a deskew angle by delta, keeping in-range angles within [-45, 45].
+
+    A normal box lives in [-45, 45]; we clamp to that band so tilting can't
+    spin it. But a box LOADED from older metadata can sit outside the band
+    (e.g. -85): hard-clamping such a value would snap it ~40 deg on the first
+    keypress (the bug). So only clamp when the starting angle is already in
+    range; an out-of-range angle just moves by delta (toward range or freely),
+    and clamping resumes naturally once it crosses back into [-45, 45].
+    """
+    new = angle + delta
+    if -45.0 <= angle <= 45.0:
+        return max(-45.0, min(45.0, new))
+    return new
+
+
+def orientation_label(orientation: int) -> str:
+    """Human-readable name for which scan edge becomes the output's top.
+
+    Box.orientation names that edge (0=top, 90=right, 180=bottom, 270=left),
+    matching the on-screen arrow and crop_box's rotation.
+    """
+    return {0: "top", 90: "right", 180: "bottom", 270: "left"}.get(
+        orientation % 360, "top")
+
+
+def box_state(box: "Box", scan_shape: tuple[int, int], active: bool = False) -> str:
+    """Classify a box for color-coding. scan_shape is (h, w).
+
+    Precedence: editing (active) > attention (zero-size or off-canvas) >
+    cropped (already exported) > neutral. Mirrors face_pipeline.face_state so
+    the sidebar dot and any canvas tint always agree.
+    """
+    if active:
+        return "editing"
+    bw, bh = box.size
+    if bw < 1 or bh < 1:
+        return "attention"
+    h, w = scan_shape
+    rect = ((box.center[0], box.center[1]), (bw, bh), box.angle)
+    pts = cv2.boxPoints(rect)
+    if (pts[:, 0].min() < 0 or pts[:, 0].max() > w
+            or pts[:, 1].min() < 0 or pts[:, 1].max() > h):
+        return "attention"
+    return "cropped" if box.output else "neutral"
 
 
 # ---------------------------------------------------------------------------
-# Editor (interactive HighGUI)
+# Shared GUI theme (ttk) — copied from face_pipeline.py (tools never cross-import)
 # ---------------------------------------------------------------------------
-# ---- shared GUI theme (ttk) ----
 ACCENT = "#5a6cf0"
 BG = "#fafaff"
 CARD_BORDER = "#ececf2"
-STATE_COLORS = {
-    "active": "#2faf6a",      # active box color
-    "inactive": "#5a6cf0",    # inactive box color
+STATE_COLORS = {            # box_state -> hex for the sidebar dot / canvas box
+    "editing": ACCENT,
+    "cropped": "#2faf6a",
+    "attention": "#d8a23a",
+    "neutral": "#9a9aa8",
 }
+
+
+def state_color(state: str) -> str:
+    return STATE_COLORS.get(state, STATE_COLORS["neutral"])
+
+
+# Single source of truth for keyboard/mouse shortcuts: (keys, description).
+# Used by the in-GUI "? Shortcuts" popover and the console help in main().
+SHORTCUTS = [
+    ("drag inside", "move the box under the cursor"),
+    ("drag edge/corner", "resize the active box"),
+    ("drag empty area", "draw a new box"),
+    ("click sidebar row", "select that box"),
+    ("← ↑ → ↓  /  h j k l", "nudge the active box"),
+    ("n  /  Tab", "select the next box"),
+    ("[  ]", "rotate orientation 90° (which edge is 'top')"),
+    (",  .", "tilt ∓0.5° (fine deskew)"),
+    ("<  >", "tilt ∓5° (coarse deskew)"),
+    ("x  /  Delete", "delete the active box"),
+    ("Enter", "crop all boxes, then go to the next scan"),
+]
+
 
 def _install_theme(root):
     """Configure a shared ttk.Style; safe to call once per app root."""
@@ -385,11 +397,14 @@ def _install_theme(root):
     style.configure("TEntry", padding=4)
     return style
 
-def crop_to_round_photo(crop, cell=64, radius=8):
-    """BGR crop -> letterboxed cell x cell rounded-corner Tk PhotoImage."""
-    import cv2
+
+def crop_to_round_photo(crop, cell=128, radius=12):
+    """BGR crop -> letterboxed cell x cell rounded-corner Tk PhotoImage.
+
+    Degrades to a plain square if rounding fails, so the GUI never crashes.
+    """
     from PIL import Image, ImageDraw, ImageTk
-    base = np.full((cell, cell, 3), 245, np.uint8)  # near-bg fill
+    base = np.full((cell, cell, 3), 245, np.uint8)
     h, w = crop.shape[:2]
     if h > 0 and w > 0:
         s = min(cell / w, cell / h)
@@ -405,572 +420,368 @@ def crop_to_round_photo(crop, cell=64, radius=8):
             [0, 0, cell - 1, cell - 1], radius=radius, fill=255)
         img.putalpha(mask)
     except Exception:
-        pass  # degrade to square
+        pass
     return ImageTk.PhotoImage(img)
 
 
-WINDOW = "Photo Scan Splitter"
-HANDLE_R = 12  # full-coord radius for corner-handle hit test (scaled at use)
-BANNER_H = 26  # status banner height in px, drawn above the image
+# ---------------------------------------------------------------------------
+# Tkinter GUI — CanvasEditor (scan canvas with native box items)
+# ---------------------------------------------------------------------------
+class CanvasEditor:
+    """A tk.Canvas showing one scan; boxes drawn as native canvas items.
 
+    Geometry stays in full-resolution scan coords; self.scale maps to display.
+    Calls on_change() after any selection or geometry edit so the host can
+    refresh the sidebar.
+    """
+    HANDLE_R = 6  # display-px radius of a corner handle oval
 
-
-class Editor:
-    """Interactive HighGUI editor for one scan."""
-
-    def __init__(self, scans_or_image: list[str] | np.ndarray,
-                 out_dir_or_boxes: str | list[Box],
-                 scan_path: str | None = None,
-                 out_dir: str | None = None,
-                 scan_idx: int = 0,
-                 total_scans: int = 1,
-                 geometry: str | None = None):
-        import tkinter as tk
+    def __init__(self, parent, tk, on_change):
         self.tk = tk
-        
-        # Determine if we are running in single-image mode (for unit tests)
-        if isinstance(scans_or_image, list) and all(isinstance(x, str) for x in scans_or_image):
-            self.scans = scans_or_image
-            self.out_dir = out_dir_or_boxes
-            self.scan_idx = scan_idx
-            self.total_scans = len(self.scans)
-            self._single_mode = False
-        else:
-            self.scans = [scan_path] if scan_path else []
-            self.image = scans_or_image
-            self.boxes = out_dir_or_boxes
-            self.scan_path = scan_path
-            self.out_dir = out_dir
-            self.scan_idx = scan_idx
-            self.total_scans = total_scans
-            self._single_mode = True
+        self.on_change = on_change
+        self.image = None          # full-res BGR numpy scan
+        self.boxes = []
+        self.active = -1
+        self.scale = 1.0
+        self._bg_photo = None      # keep a ref so Tk doesn't GC it
+        self.drag = None           # None | 'move' | 'new' | ('resize', handle)
+        self.drag_start = None     # full-coord
+        self.drag_current = None   # full-coord
+        self.canvas = tk.Canvas(parent, highlightthickness=0, bg=BG,
+                                cursor="tcross")
+        self.canvas.pack(fill="both", expand=True)
+        self.canvas.bind("<Button-1>", self._on_press)
+        self.canvas.bind("<B1-Motion>", self._on_motion)
+        self.canvas.bind("<ButtonRelease-1>", self._on_release)
 
-        self.active = 0 if (self._single_mode and self.boxes) else -1
-        self._geometry = geometry
-        self._card_refs = []
-        
-        # Fit scan image to fixed pane
-        self.PHOTO_W, self.PHOTO_H = 760, 680
-        
-        self.drag = None          # None | 'move' | 'new' | ('resize', handle)
-        self.drag_start = None    # full-coord
-        self.drag_current = None  # full-coord
-        self.next_request = None  # 'next' | 'prev' | 'quit'
-        self._preview_open = False
-        self._dirty = True
-        self._cells = []          # crop thumbnails PhotoImage references
-        self._resize_job = None
-
-        if self._single_mode:
-            h, w = self.image.shape[:2]
-            self.scale = min(self.PHOTO_W / w, self.PHOTO_H / h, 1.0)
-            self._base = scale_base(self.image, self.scale)
-        else:
-            self._load_scan(self.scan_idx)
-        
-        # Build Window
-        from tkinter import ttk
-        self.ttk = ttk
-        self.root = tk.Tk()
-        self.root.title("Photo Splitter")
-        if self._geometry:
-            self.root.geometry(self._geometry)
-        else:
-            self.root.geometry("1120x780")
-        self.root.resizable(True, True)
-        self.root.minsize(1120, 780)
-        _install_theme(self.root)
-
-        # Top Progress Header
-        head = ttk.Frame(self.root)
-        head.pack(side="top", fill="x", padx=16, pady=(10, 4))
-        self.title_var = tk.StringVar()
-        ttk.Label(head, textvariable=self.title_var, style="Title.TLabel").pack(anchor="w")
-        
-        # We'll set the progress value dynamically in _show()
-        self.progress = ttk.Progressbar(head, cursor="hand2")
-        self.progress.pack(fill="x", pady=(6, 0))
-        self.progress.bind("<Button-1>", self._on_progress_click)
-
-        # Bottom Navigation
-        bar = ttk.Frame(self.root)
-        bar.pack(side="bottom", fill="x", padx=16, pady=10)
-        
-        left_btns = ttk.Frame(bar)
-        left_btns.pack(side="left")
-        ttk.Button(left_btns, text="← Back", command=self._back).pack(side="left", padx=4)
-        ttk.Button(left_btns, text="Save & Next →", style="Primary.TButton", command=self._next).pack(side="left", padx=4)
-        
-        ttk.Button(bar, text="Keyboard Shortcuts", command=self._show_shortcuts).pack(side="right", padx=4)
-
-        # Main Split Body
-        body = ttk.Frame(self.root)
-        body.pack(side="top", fill="both", expand=True, padx=16, pady=4)
-
-        # Left View Pane
-        self.photo_pane = ttk.Frame(body)
-        self.photo_pane.pack(side="left", fill="both", expand=True)
-        self.photo_pane.pack_propagate(False)
-        self.photo_pane.bind("<Configure>", self._on_pane_configure)
-        self.canvas = tk.Label(self.photo_pane, bg=BG)
-        self.canvas.pack(expand=True)
-        
-        # Bind mouse events to the image viewer
-        self.canvas.bind("<Button-1>", self.on_mouse_down)
-        self.canvas.bind("<B1-Motion>", self.on_mouse_drag)
-        self.canvas.bind("<ButtonRelease-1>", self.on_mouse_up)
-
-        # Right Scrollable Card Sidebar
-        right = ttk.Frame(body, width=320)
-        right.pack(side="right", fill="y", padx=(8, 0))
-        right.pack_propagate(False)
-        
-        self.rows_canvas = tk.Canvas(right, highlightthickness=0, bg=BG)
-        self._vbar = self.ttk.Scrollbar(right, orient="vertical", command=self.rows_canvas.yview)
-        self.rows_canvas.configure(yscrollcommand=self._vbar.set)
-        self.rows_canvas.pack(side="left", fill="both", expand=True)
-        
-        self.rows_frame = tk.Frame(self.rows_canvas, bg=BG)
-        self._rows_window = self.rows_canvas.create_window((0, 0), window=self.rows_frame, anchor="nw")
-        
-        self.rows_frame.bind("<Configure>", lambda e: (
-            self.rows_canvas.configure(scrollregion=self.rows_canvas.bbox("all")),
-            self._sync_scrollbar()
-        ))
-        self.rows_canvas.bind("<Configure>", lambda e: (
-            self.rows_canvas.itemconfigure(self._rows_window, width=e.width),
-            self._sync_scrollbar()
-        ))
-        self.rows_canvas.bind_all("<MouseWheel>", lambda e: self.rows_canvas.yview_scroll(
-            int(-1 * (e.delta / 120)), "units"
-        ))
-
-        # Bind Window Keys
-        self.root.bind("<Tab>", lambda e: (self._cycle_active(), "break"))
-        self.root.bind("<Key-n>", lambda e: self._cycle_active())
-        self.root.bind("<Left>", lambda e: self._move_active_kbd(-20, 0))
-        self.root.bind("<Right>", lambda e: self._move_active_kbd(20, 0))
-        self.root.bind("<Up>", lambda e: self._move_active_kbd(0, -20))
-        self.root.bind("<Down>", lambda e: self._move_active_kbd(0, 20))
-        self.root.bind("<Key-h>", lambda e: self._move_active_kbd(-20, 0))
-        self.root.bind("<Key-l>", lambda e: self._move_active_kbd(20, 0))
-        self.root.bind("<Key-k>", lambda e: self._move_active_kbd(0, -20))
-        self.root.bind("<Key-j>", lambda e: self._move_active_kbd(0, 20))
-        self.root.bind("<Key-bracketleft>", lambda e: self._rotate_active(-90))
-        self.root.bind("<Key-bracketright>", lambda e: self._rotate_active(90))
-        self.root.bind("<Key-comma>", lambda e: self._nudge_active(-0.5))
-        self.root.bind("<Key-period>", lambda e: self._nudge_active(0.5))
-        self.root.bind("<Key-less>", lambda e: self._nudge_active(-5.0))
-        self.root.bind("<Key-greater>", lambda e: self._nudge_active(5.0))
-        self.root.bind("<Key-x>", lambda e: self._delete_active())
-        self.root.bind("<BackSpace>", lambda e: self._delete_active())
-        self.root.bind("<Delete>", lambda e: self._delete_active())
-        self.root.bind("<Return>", lambda e: self._next())
-        self.root.bind("<Key-equal>", lambda e: self._next_no_crop())
-        self.root.bind("<Key-minus>", lambda e: self._prev_no_crop())
-        self.root.bind("<Key-s>", lambda e: self.save())
-        self.root.bind("<Key-c>", lambda e: self.crop_all())
-        self.root.bind("<Key-q>", lambda e: self._quit())
-        
-        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
-
-    def _load_scan(self, idx):
-        self._cancel_resize_job()
-        if self._single_mode:
-            return
-
-        self.scan_idx = idx
-        self.scan_path = self.scans[idx]
-        self.image = cv2.imread(self.scan_path)
-        if self.image is None:
-            self.image = np.full((100, 100, 3), 245, dtype=np.uint8)
-            print(f"  ! cannot read {self.scan_path}")
-            
-        boxes = load_metadata(self.scan_path)
-        if boxes is None:
-            boxes = detect_photos(self.image)
-            print(f"{os.path.basename(self.scan_path)}: auto-detected {len(boxes)} photo(s)")
-        else:
-            print(f"{os.path.basename(self.scan_path)}: loaded {len(boxes)} box(es) from metadata")
+    # ---- public API ----
+    def set_scan(self, image, boxes):
+        self.image = image
         self.boxes = boxes
-        self.active = 0 if self.boxes else -1
-        
-        h, w = self.image.shape[:2]
-        self.scale = min(self.PHOTO_W / w, self.PHOTO_H / h, 1.0)
-        self._base = scale_base(self.image, self.scale)
-        self._dirty = True
+        self.active = 0 if boxes else -1
+        h, w = image.shape[:2]
+        self.scale = min(1000 / w, 1000 / h, 1.0)
+        self._render_background()
+        self.redraw()
 
-    # ---- coordinate helpers ----
-    def _full(self, x, y):
-        # We don't have the BANNER_H status banner offset on the canvas image anymore!
-        return disp_to_full((x, y), self.scale)
-
-    def _full_tk(self, event):
-        """Translate tk.Label local event coords to full scan coords."""
-        return event.x / self.scale, event.y / self.scale
-
-    def _active_box(self):
+    def active_box(self):
         if 0 <= self.active < len(self.boxes):
             return self.boxes[self.active]
         return None
 
+    # ---- rendering ----
+    def _render_background(self):
+        from PIL import Image, ImageTk
+        disp = cv2.resize(self.image, None, fx=self.scale, fy=self.scale,
+                          interpolation=cv2.INTER_AREA)
+        rgb = cv2.cvtColor(disp, cv2.COLOR_BGR2RGB)
+        self._bg_photo = ImageTk.PhotoImage(Image.fromarray(rgb))
+        dh, dw = disp.shape[:2]
+        self.canvas.configure(width=dw, height=dh)
+
+    def redraw(self):
+        c = self.canvas
+        c.delete("overlay")
+        if self._bg_photo is not None:
+            c.delete("bg")
+            c.create_image(0, 0, anchor="nw", image=self._bg_photo, tags="bg")
+        for i, b in enumerate(self.boxes):
+            active = (i == self.active)
+            state = box_state(b, self.image.shape[:2], active=active)
+            color = state_color(state)
+            rect = ((b.center[0] * self.scale, b.center[1] * self.scale),
+                    (b.size[0] * self.scale, b.size[1] * self.scale), b.angle)
+            pts = cv2.boxPoints(rect)
+            flat = [coord for xy in pts for coord in xy]
+            c.create_polygon(flat, outline=color, width=3 if active else 2,
+                             fill="", tags="overlay")
+            # number badge at the box center
+            c.create_text(b.center[0] * self.scale, b.center[1] * self.scale,
+                          text=str(i + 1), fill=color,
+                          font=("TkDefaultFont", 11, "bold"), tags="overlay")
+            if active:
+                for (px, py) in pts:
+                    c.create_oval(px - self.HANDLE_R, py - self.HANDLE_R,
+                                  px + self.HANDLE_R, py + self.HANDLE_R,
+                                  outline=color, fill="#ffffff", tags="overlay")
+                (x0, y0), (x1, y1) = _orient_arrow(b)
+                c.create_line(x0 * self.scale, y0 * self.scale,
+                              x1 * self.scale, y1 * self.scale,
+                              fill="#e0405a", width=2, arrow="last",
+                              tags="overlay")
+
+        # Draw dynamic preview of the box currently being drawn
+        if self.drag == "new" and self.drag_start is not None and self.drag_current is not None:
+            x0, y0 = self.drag_start[0] * self.scale, self.drag_start[1] * self.scale
+            x1, y1 = self.drag_current[0] * self.scale, self.drag_current[1] * self.scale
+            c.create_rectangle(x0, y0, x1, y1, outline=state_color("editing"), width=2, tags="overlay")
+
+    # ---- coordinate helper ----
+    def _full(self, x, y):
+        return disp_to_full((x, y), self.scale)
+
     # ---- mouse ----
-    def on_mouse_down(self, event):
-        fx, fy = self._full_tk(event)
-        self._dirty = True
-        
-        # 1) Edge or corner handle of active box?
-        b = self._active_box()
+    def _on_press(self, event):
+        if self.image is None:
+            return
+        fx, fy = self._full(event.x, event.y)
+        b = self.active_box()
         if b is not None:
-            handle = grab_handle((fx, fy), b, HANDLE_R / self.scale)
+            handle = grab_handle((fx, fy), b, self.HANDLE_R / self.scale)
             if handle is not None:
                 self.drag = ("resize", handle)
                 self.drag_start = (fx, fy)
                 return
-        
-        # 2) Click inside an existing box -> select + move
         for i, bx in enumerate(self.boxes):
             if point_in_box((fx, fy), bx):
                 self.active = i
                 self.drag = "move"
                 self.drag_start = (fx, fy)
-                self._show()  # refresh cards to highlight selection
+                self.redraw()
+                self.on_change()
                 return
-        
-        # 3) Empty area -> start new box
         self.drag = "new"
         self.drag_start = (fx, fy)
         self.drag_current = (fx, fy)
 
-    def on_mouse_drag(self, event):
+    def _on_motion(self, event):
         if not self.drag:
             return
-        fx, fy = self._full_tk(event)
-        b = self._active_box()
+        fx, fy = self._full(event.x, event.y)
+        b = self.active_box()
         if self.drag == "move" and b is not None:
-            dx = fx - self.drag_start[0]
-            dy = fy - self.drag_start[1]
-            b.center[0] += dx
-            b.center[1] += dy
+            nudge_box(b, fx - self.drag_start[0], fy - self.drag_start[1])
             self.drag_start = (fx, fy)
         elif isinstance(self.drag, tuple) and self.drag[0] == "resize" and b is not None:
             resize_box(b, self.drag[1], (fx, fy))
         elif self.drag == "new":
             self.drag_current = (fx, fy)
-        self._dirty = True
-        self.root.after_idle(self._draw_overlay)
+        self.redraw()
 
-    def on_mouse_up(self, event):
-        if not self.drag:
-            return
-        fx, fy = self._full_tk(event)
+    def _on_release(self, event):
+        fx, fy = self._full(event.x, event.y)
         if self.drag == "new":
             x0, y0 = self.drag_start
-            w = abs(fx - x0)
-            h = abs(fy - y0)
+            w, h = abs(fx - x0), abs(fy - y0)
             if w > 10 and h > 10:
-                box = Box(center=[(fx + x0) / 2, (fy + y0) / 2], size=[w, h])
-                self.boxes.append(box)
+                self.boxes.append(
+                    Box(center=[(fx + x0) / 2, (fy + y0) / 2], size=[w, h]))
                 self._renumber()
                 self.active = len(self.boxes) - 1
         self.drag = None
         self.drag_start = None
         self.drag_current = None
-        self._dirty = True
-        self._show()  # rebuilds sidebar cards with new thumbnails
+        self.redraw()
+        self.on_change()
 
     def _renumber(self):
         for i, b in enumerate(self.boxes, 1):
             b.id = i
 
-    def _cycle_active(self):
-        if self.boxes:
-            self.active = (self.active + 1) % len(self.boxes)
-            self._dirty = True
-            self._show()
 
-    def _move_active_kbd(self, dx, dy):
-        b = self._active_box()
-        if b is not None:
-            b.center[0] += dx
-            b.center[1] += dy
-            self._dirty = True
-            self._show()
+# ---------------------------------------------------------------------------
+# Tkinter GUI — SplitterApp (root, header, sidebar, action bar)
+# ---------------------------------------------------------------------------
+class SplitterApp:
+    """Tkinter app: scan canvas (left) + box list / active-box panel (right)."""
 
-    def _rotate_active(self, delta_deg):
-        b = self._active_box()
-        if b is not None:
-            b.orientation = (b.orientation + delta_deg) % 360
-            self._dirty = True
-            self._show()
+    def __init__(self, scans, out_dir):
+        import tkinter as tk
+        from tkinter import ttk
+        self.tk = tk
+        self.ttk = ttk
+        self.scans = scans
+        self.out_dir = out_dir
+        self.idx = 0
+        self.image = None
+        self.boxes = []
+        self.scan_path = None
+        self._preview_photo = None
+        self._shortcuts_win = None
 
-    def _nudge_active(self, delta):
-        b = self._active_box()
-        if b is not None:
-            self._nudge_angle(b, delta)
-            self._dirty = True
-            self._show()
+        self.root = tk.Tk()
+        self.root.title("Photo Scan Splitter")
+        self.root.geometry("1180x820")
+        self.root.minsize(900, 600)  # keep the bottom action bar reachable
+        _install_theme(self.root)
 
-    def _delete_active(self):
-        if 0 <= self.active < len(self.boxes):
-            del self.boxes[self.active]
-            self._renumber()
-            self.active = min(self.active, len(self.boxes) - 1)
-            self._dirty = True
-            self._show()
+        # header
+        head = ttk.Frame(self.root)
+        head.pack(fill="x", padx=16, pady=(12, 4))
+        self.title_var = tk.StringVar()
+        self.sub_var = tk.StringVar()
+        ttk.Label(head, textvariable=self.title_var, style="Title.TLabel").pack(anchor="w")
+        ttk.Label(head, textvariable=self.sub_var, style="Sub.TLabel").pack(anchor="w")
+        self.progress = ttk.Progressbar(head, maximum=len(self.scans), cursor="hand2")
+        self.progress.pack(fill="x", pady=(8, 0))
+        self.progress.bind("<Button-1>", self._on_progress_click)
 
-    def _sync_scrollbar(self):
-        content = self.rows_frame.winfo_reqheight()
-        visible = self.rows_canvas.winfo_height()
-        if content > visible:
-            if not self._vbar.winfo_ismapped():
-                self._vbar.pack(side="right", fill="y", before=self.rows_canvas)
-        else:
-            if self._vbar.winfo_ismapped():
-                self._vbar.pack_forget()
-            self.rows_canvas.yview_moveto(0)
+        # action bar — packed against the bottom FIRST so it always reserves
+        # its space and is never pushed off-screen by a tall sidebar/preview.
+        bar = ttk.Frame(self.root)
+        bar.pack(side="bottom", fill="x", padx=16, pady=(4, 12))
+        ttk.Button(bar, text="+ Re-detect", command=self._redetect).pack(side="left")
+        ttk.Button(bar, text="Crop all", command=self._crop_all).pack(side="left", padx=(8, 0))
+        ttk.Button(bar, text="? Shortcuts", command=self._show_shortcuts).pack(
+            side="left", padx=(8, 0))
+        self.next_btn = ttk.Button(bar, text="Next →", style="Primary.TButton",
+                                   command=self._next)
+        self.next_btn.pack(side="right")
+        ttk.Button(bar, text="← Prev", command=self._prev).pack(side="right", padx=(0, 8))
 
-    def _build_sidebar_cards(self):
-        for child in self.rows_frame.winfo_children():
-            child.destroy()
-        self._cells = []
-        self._card_refs = []
-        
-        for idx, box in enumerate(self.boxes):
-            is_active = (idx == self.active)
-            bg_color = "#f0f0f8" if is_active else BG
-            border_color = ACCENT if is_active else CARD_BORDER
-            
-            # Card Outer frame using standard tk.Frame for direct background color config
-            card = self.tk.Frame(self.rows_frame, bg=bg_color, bd=1, relief="flat",
-                                 highlightbackground=border_color, highlightthickness=1)
-            card.pack(fill="x", padx=6, pady=4)
-            
-            # Rounded thumbnail
-            try:
-                crop = crop_box(self.image, box)
-            except ValueError:
-                crop = np.full((64, 64, 3), 200, dtype=np.uint8)
-            
-            thumb = crop_to_round_photo(crop, cell=64, radius=8)
-            self._cells.append(thumb) # keep reference alive
-            
-            # Card Layout Grid
-            lbl_thumb = self.tk.Label(card, image=thumb, bg=bg_color)
-            lbl_thumb.grid(row=0, column=0, rowspan=2, padx=(0, 8), pady=8)
-            
-            # Click card selection bind
-            lbl_thumb.bind("<Button-1>", lambda e, i=idx: self._select_card(i))
-            
-            badge_color = STATE_COLORS["active"] if is_active else STATE_COLORS["inactive"]
-            lbl_badge = self.tk.Label(card, text=f" #{box.id} ", bg=badge_color, fg="#ffffff", font=("TkDefaultFont", 10, "bold"))
-            lbl_badge.grid(row=0, column=1, sticky="w", pady=(8, 0))
-            lbl_badge.bind("<Button-1>", lambda e, i=idx: self._select_card(i))
-            
-            desc = f"{int(round(box.size[0]))}x{int(round(box.size[1]))} px\nAngle: {box.angle:.1f}° | Orient: {orientation_name(box.orientation)}"
-            lbl_desc = self.tk.Label(card, text=desc, bg=bg_color, fg="#1a1a2e", font=("TkDefaultFont", 9), anchor="w", justify="left")
-            lbl_desc.grid(row=1, column=1, sticky="w", pady=(2, 8))
-            lbl_desc.bind("<Button-1>", lambda e, i=idx: self._select_card(i))
-            
-            # Card Action Buttons frame
-            btn_frame = self.tk.Frame(card, bg=bg_color)
-            btn_frame.grid(row=2, column=0, columnspan=2, pady=(0, 8), padx=8, sticky="e")
-            
-            btn_rot = self.ttk.Button(btn_frame, text="↺ Rotate", command=lambda i=idx: self._rotate_card(i))
-            btn_rot.pack(side="left", padx=2)
-            
-            btn_del = self.ttk.Button(btn_frame, text="Delete", command=lambda i=idx: self._delete_card(i))
-            btn_del.pack(side="left", padx=2)
-            
-            # Let's bind main frame clicks
-            card.bind("<Button-1>", lambda e, i=idx: self._select_card(i))
-            
-            # Store references to allow updating individual controls
-            card_info = {
-                "card": card,
-                "lbl_thumb": lbl_thumb,
-                "lbl_badge": lbl_badge,
-                "lbl_desc": lbl_desc,
-                "btn_frame": btn_frame,
-            }
-            self._card_refs.append(card_info)
+        # body: canvas (left) + sidebar (right)
+        body = ttk.Frame(self.root)
+        body.pack(fill="both", expand=True, padx=16, pady=8)
+        left = ttk.Frame(body)
+        left.pack(side="left", fill="both", expand=True)
+        self.editor = CanvasEditor(left, tk, on_change=self._refresh_sidebar)
 
-    def _update_sidebar_cards(self):
-        """Update existing card controls dynamically instead of destroying/recreating them."""
-        if len(self.boxes) != len(self._card_refs):
-            self._build_sidebar_cards()
-            return
-            
-        self._cells = []
-        for idx, box in enumerate(self.boxes):
-            ref = self._card_refs[idx]
-            is_active = (idx == self.active)
-            bg_color = "#f0f0f8" if is_active else BG
-            border_color = ACCENT if is_active else CARD_BORDER
-            
-            # Update thumbnail image
-            try:
-                crop = crop_box(self.image, box)
-            except ValueError:
-                crop = np.full((64, 64, 3), 200, dtype=np.uint8)
-            thumb = crop_to_round_photo(crop, cell=64, radius=8)
-            self._cells.append(thumb)
-            
-            # Configure properties on existing controls
-            ref["card"].configure(bg=bg_color, highlightbackground=border_color)
-            ref["lbl_thumb"].configure(image=thumb, bg=bg_color)
-            
-            badge_color = STATE_COLORS["active"] if is_active else STATE_COLORS["inactive"]
-            ref["lbl_badge"].configure(bg=badge_color)
-            
-            desc = f"{int(round(box.size[0]))}x{int(round(box.size[1]))} px\nAngle: {box.angle:.1f}° | Orient: {orientation_name(box.orientation)}"
-            ref["lbl_desc"].configure(text=desc, bg=bg_color)
-            ref["btn_frame"].configure(bg=bg_color)
+        side = ttk.Frame(body, width=300)
+        side.pack(side="right", fill="y", padx=(12, 0))
+        side.pack_propagate(False)
 
-    def _select_card(self, idx):
-        self.active = idx
-        self._dirty = True
-        self._show()
+        ttk.Label(side, text="PHOTOS", style="Sub.TLabel").pack(anchor="w")
+        self.rows = ttk.Frame(side)
+        self.rows.pack(fill="x", pady=(2, 10))
 
-    def _rotate_card(self, idx):
-        self.boxes[idx].orientation = (self.boxes[idx].orientation - 90) % 360
-        self._dirty = True
-        self._show()
+        ttk.Label(side, text="ACTIVE BOX", style="Sub.TLabel").pack(anchor="w")
+        info = ttk.Frame(side); info.pack(fill="x", pady=(2, 6))
+        self.orient_var = tk.StringVar(value="top")
+        ttk.Label(info, text="top edge:").pack(side="left")
+        ttk.Label(info, textvariable=self.orient_var, width=8,
+                  anchor="w").pack(side="left")
 
-    def _delete_card(self, idx):
-        del self.boxes[idx]
-        self._renumber()
-        self.active = min(idx, len(self.boxes) - 1)
-        self._dirty = True
-        self._show()
+        self.preview_label = ttk.Label(side)
+        self.preview_label.pack(pady=(4, 8))
+        ttk.Button(side, text="↻ Rotate", command=lambda: self._orient(90)).pack(
+            fill="x", pady=(0, 4))
+        ttk.Button(side, text="Delete box", command=self._delete).pack(fill="x")
 
-    def _scroll_active_into_view(self):
-        if not self.boxes or self.active < 0:
-            return
-        total = len(self.boxes)
-        # Estimate vertical position faction
-        frac = self.active / total
-        self.rows_canvas.yview_moveto(max(0.0, frac - 0.2))
+        # keyboard (mirrors the old editor). bind_all puts the handler in the
+        # global "all" bindtag so shortcuts fire no matter which button/widget
+        # currently holds focus (root-only bind dies the moment a button is
+        # clicked — its class bindings shadow the key). Same approach the
+        # face_pipeline GUIs use for app-global keys.
+        self.root.bind_all("<Key>", self._on_key)
+        # Tab is consumed by Tk's focus-traversal binding on the widget's CLASS
+        # tag, which runs before the "all" tag — so bind_all("<Tab>") never
+        # fires. Binding on the canvas INSTANCE tag (processed before the class
+        # tag) wins; the canvas is the focus owner after each scan load.
+        # ISO_Left_Tab is Shift+Tab on X11/some macOS layouts.
+        self.editor.canvas.bind("<Tab>", self._on_tab)
+        self.editor.canvas.bind("<ISO_Left_Tab>", self._on_tab)
 
+    # ---- scan lifecycle ----
+    def _load_scan(self):
+        path = self.scans[self.idx]
+        self.scan_path = path
+        self.image = cv2.imread(path)
+        boxes = load_metadata(path)
+        if boxes is None:
+            boxes = detect_photos(self.image)
+        self.boxes = boxes
+        self.editor.set_scan(self.image, self.boxes)
+        self._refresh_header()
+        self._refresh_sidebar()
+        # ensure the window owns keyboard focus so shortcuts work before any
+        # button is clicked (clicks would otherwise be the first focus event)
+        self.editor.canvas.focus_set()
 
-    def _draw_overlay(self):
-        """Draw OpenCV bounding boxes on top of the pre-scaled scan base."""
-        if not self._dirty:
-            return
-        import cv2
-        from PIL import Image, ImageTk
-        
-        disp = self._base.copy()
+    def _refresh_header(self):
+        self.title_var.set(os.path.basename(self.scan_path))
+        cropped = sum(1 for b in self.boxes if b.output)
+        self.sub_var.set(f"{len(self.boxes)} photos · {cropped} cropped")
+        self.progress.configure(value=self.idx + 1)
+
+    def _refresh_sidebar(self):
+        for w in self.rows.winfo_children():
+            w.destroy()
+        self._row_thumbs = []  # keep PhotoImage refs alive (Tk GCs otherwise)
         for i, b in enumerate(self.boxes):
-            rect = ((b.center[0] * self.scale, b.center[1] * self.scale),
-                    (b.size[0] * self.scale, b.size[1] * self.scale), b.angle)
-            pts = cv2.boxPoints(rect).astype(np.int32)
-            color = (47, 175, 106) if i == self.active else (240, 108, 90) # BGR: active=green, inactive=blueish
-            cv2.polylines(disp, [pts], True, color, 2)
-            
-            if i == self.active:
-                p0, p1 = _orient_arrow(b)
-                cv2.arrowedLine(disp, (int(p0[0] * self.scale), int(p0[1] * self.scale)),
-                                (int(p1[0] * self.scale), int(p1[1] * self.scale)),
-                                (0, 0, 255), 2, tipLength=0.3)
-                                
-        # Draw dynamic preview of the box currently being drawn
-        if self.drag == "new" and self.drag_start is not None and self.drag_current is not None:
-            x0, y0 = self.drag_start
-            x1, y1 = self.drag_current
-            cx, cy = (x1 + x0) / 2, (y1 + y0) / 2
-            bw, bh = abs(x1 - x0), abs(y1 - y0)
-            if bw > 5 and bh > 5:
-                rect = ((cx * self.scale, cy * self.scale),
-                        (bw * self.scale, bh * self.scale), 0.0)
-                pts = cv2.boxPoints(rect).astype(np.int32)
-                cv2.polylines(disp, [pts], True, (47, 175, 106), 2)
-
-        rgb = cv2.cvtColor(disp, cv2.COLOR_BGR2RGB)
-        self._photo_img = ImageTk.PhotoImage(Image.fromarray(rgb))
-        self.canvas.configure(image=self._photo_img)
-        self._dirty = False
-
-    def _show(self):
-        scan_name = os.path.basename(self.scan_path)
-        self.title_var.set(f"Scan: {scan_name} ({self.scan_idx + 1} of {self.total_scans}) — {len(self.boxes)} photo(s) detected")
-        self.progress.configure(maximum=self.total_scans, value=self.scan_idx)
-        self._update_sidebar_cards()
-        self._draw_overlay()
-        self._scroll_active_into_view()
-
-    def _cancel_resize_job(self):
-        if self._resize_job is not None:
+            active = (i == self.editor.active)
+            color = state_color(box_state(b, self.image.shape[:2], active=active))
+            rowbg = ACCENT if active else BG
+            row = self.tk.Frame(self.rows, bg=rowbg)
+            row.pack(fill="x", pady=1)
+            dot = self.tk.Label(row, text="●", fg=color, bg=rowbg)
+            dot.pack(side="left", padx=(4, 4))
             try:
-                self.root.after_cancel(self._resize_job)
-            except Exception:
-                pass
-            self._resize_job = None
+                thumb = crop_to_round_photo(crop_box(self.image, b), cell=40,
+                                            radius=6)
+            except ValueError:
+                thumb = crop_to_round_photo(
+                    np.full((10, 10, 3), 200, np.uint8), cell=40, radius=6)
+            self._row_thumbs.append(thumb)
+            tlbl = self.tk.Label(row, image=thumb, bg=rowbg)
+            tlbl.pack(side="left", padx=(0, 6))
+            txt = f"{i+1}   {int(b.size[0])}×{int(b.size[1])}"
+            lbl = self.tk.Label(row, text=txt, anchor="w",
+                                fg="#ffffff" if active else "#1a1a2e", bg=rowbg)
+            lbl.pack(side="left", fill="x", expand=True)
+            for wdg in (row, dot, tlbl, lbl):
+                wdg.bind("<Button-1>", lambda e, idx=i: self._select(idx))
+        self._refresh_active_panel()
+        self._refresh_header()
 
-    def _on_progress_click(self, event):
-        width = self.progress.winfo_width()
-        if width <= 0 or self.total_scans == 0:
+    def _refresh_active_panel(self):
+        b = self.editor.active_box()
+        if b is None:
+            self.orient_var.set("—")
+            self.preview_label.configure(image="")
+            self._preview_photo = None
             return
-        frac = max(0.0, min(1.0, event.x / width))
-        target = min(self.total_scans - 1, int(frac * self.total_scans))
-        if target == self.scan_idx:
-            return
-        if self._single_mode:
-            return
-        self._cancel_resize_job()
-        self.save()
-        self._load_scan(target)
-        self._show()
+        self.orient_var.set(orientation_label(b.orientation))
+        try:
+            crop = crop_box(self.image, b)
+            self._preview_photo = crop_to_round_photo(crop, cell=180)
+        except ValueError:
+            self._preview_photo = crop_to_round_photo(
+                np.full((10, 10, 3), 200, np.uint8), cell=180)
+        self.preview_label.configure(image=self._preview_photo)
 
-    def _next(self):
-        self._cancel_resize_job()
-        self.crop_all()
-        if self._single_mode or self.scan_idx == self.total_scans - 1:
-            self.next_request = "next"
-            self.root.destroy()
-            return
-        self._load_scan(self.scan_idx + 1)
-        self._show()
+    # ---- selection / edits ----
+    def _select(self, idx):
+        self.editor.active = idx
+        self.editor.redraw()
+        self._refresh_sidebar()
 
-    def _next_no_crop(self):
-        self._cancel_resize_job()
-        self.save()
-        if self._single_mode or self.scan_idx == self.total_scans - 1:
-            self.next_request = "next"
-            self.root.destroy()
-            return
-        self._load_scan(self.scan_idx + 1)
-        self._show()
+    def _nudge(self, delta):
+        # Skew adjust is held down / repeated — keep it cheap. Redraw ONLY the
+        # canvas (the active frame); skip the sidebar rebuild, which re-crops a
+        # thumbnail per box and re-renders the preview and made tilt lag. The
+        # thumbnail/preview refresh on the next select/orient/delete/scan.
+        b = self.editor.active_box()
+        if b is not None:
+            b.angle = tilt_angle(b.angle, delta)
+            self.editor.redraw()
 
-    def _prev_no_crop(self):
-        self._cancel_resize_job()
-        self.save()
-        if self._single_mode or self.scan_idx == 0:
-            self.next_request = "prev"
-            self.root.destroy()
-            return
-        self._load_scan(self.scan_idx - 1)
-        self._show()
+    def _orient(self, delta):
+        b = self.editor.active_box()
+        if b is not None:
+            b.orientation = (b.orientation + delta) % 360
+            self.editor.redraw(); self._refresh_sidebar()
 
-    def _back(self):
-        self._prev_no_crop()
+    def _delete(self):
+        i = self.editor.active
+        if 0 <= i < len(self.boxes):
+            del self.boxes[i]
+            self.editor._renumber()
+            self.editor.active = min(i, len(self.boxes) - 1)
+            self.editor.redraw(); self._refresh_sidebar()
 
-    def _quit(self):
-        self._cancel_resize_job()
-        self.save()
-        self.next_request = "quit"
-        self.root.destroy()
+    # ---- actions ----
+    def _redetect(self):
+        self.boxes = detect_photos(self.image)
+        self.editor.set_scan(self.image, self.boxes)
+        self._refresh_sidebar()
 
-    def _on_close(self):
-        self._quit()
+    def _save(self):
+        h, w = self.image.shape[:2]
+        save_metadata(self.scan_path, (w, h), self.boxes)
 
-    def _close_preview(self):
-        pass
-
-    def crop_all(self):
+    def _crop_all(self):
         os.makedirs(self.out_dir, exist_ok=True)
         stem = os.path.splitext(os.path.basename(self.scan_path))[0]
-        saved = 0
         for i, b in enumerate(self.boxes, 1):
             try:
                 out = crop_box(self.image, b)
@@ -980,104 +791,120 @@ class Editor:
             name = f"{stem}_{i:02d}.jpg"
             b.output = name
             cv2.imwrite(os.path.join(self.out_dir, name), out)
-            saved += 1
-        self.save()
-        print(f"  cropped {saved} photo(s) to {self.out_dir}/")
+        self._save()
+        self._refresh_sidebar()
 
-    def _on_pane_configure(self, event):
-        """Handle viewer frame resize dynamically updating image fit."""
-        if event.widget != self.photo_pane:
-            return
-        w, h = event.width, event.height
-        if w < 100 or h < 100:
-            return
-        # Leave a small margin for padding
-        target_w = w - 8
-        target_h = h - 8
-        if abs(target_w - self.PHOTO_W) > 5 or abs(target_h - self.PHOTO_H) > 5:
-            if self._resize_job is not None:
-                try:
-                    self.root.after_cancel(self._resize_job)
-                except Exception:
-                    pass
-            self._resize_job = self.root.after(100, self._do_resize, w, h)
+    def _next(self):
+        self._save()
+        if self.idx < len(self.scans) - 1:
+            self.idx += 1
+            self._load_scan()
 
-    def _do_resize(self, w, h):
-        self._resize_job = None
-        try:
-            if not self.root.winfo_exists():
-                return
-        except Exception:
-            return
-        target_w = w - 8
-        target_h = h - 8
-        self.PHOTO_W = target_w
-        self.PHOTO_H = target_h
-        h_img, w_img = self.image.shape[:2]
-        self.scale = min(self.PHOTO_W / w_img, self.PHOTO_H / h_img, 1.0)
-        self._base = scale_base(self.image, self.scale)
-        self._dirty = True
-        self._draw_overlay()
+    def _prev(self):
+        self._save()
+        if self.idx > 0:
+            self.idx -= 1
+            self._load_scan()
 
+    def _on_progress_click(self, event):
+        width = self.progress.winfo_width()
+        if width <= 0:
+            return
+        frac = max(0.0, min(1.0, event.x / width))
+        target = min(len(self.scans) - 1, int(frac * len(self.scans)))
+        if target != self.idx:
+            self._save()
+            self.idx = target
+            self._load_scan()
+
+    # ---- keyboard (mirrors the old OpenCV editor) ----
+    def _on_key(self, event):
+        k = event.keysym
+        # bind_all sees keys destined for focused buttons too; let a focused
+        # button handle its own activation keys (avoids double-firing Return).
+        if k in ("Return", "space") and isinstance(event.widget, self.ttk.Button):
+            return
+        # Punctuation keys: match on the typed CHARACTER, not the keysym name.
+        # This Tk reports event.keysym as "]" (not the X11 name "bracketright")
+        # for those keys, so name matching silently never fired.
+        ch = event.char
+        step = 20.0
+        if k == "n":
+            self._next_box()
+        elif k in ("Left", "h"): self._move(-step, 0)
+        elif k in ("Right", "l"): self._move(step, 0)
+        elif k in ("Up", "k"): self._move(0, -step)
+        elif k in ("Down", "j"): self._move(0, step)
+        elif ch == "[": self._orient(-90)
+        elif ch == "]": self._orient(90)
+        elif ch == ",": self._nudge(-0.5)
+        elif ch == ".": self._nudge(0.5)
+        elif ch == "<": self._nudge(-5.0)
+        elif ch == ">": self._nudge(5.0)
+        elif k in ("x", "Delete", "BackSpace"): self._delete()
+        elif k == "Return": self._crop_all(); self._next()
+        elif ch == "?" or k == "F1": self._show_shortcuts()
+
+    def _next_box(self):
+        if self.boxes:
+            self.editor.active = (self.editor.active + 1) % len(self.boxes)
+            self.editor.redraw()
+            self._refresh_sidebar()
+
+    def _on_tab(self, event):
+        # Tab is consumed by Tk's focus-traversal class binding before the
+        # bind_all("<Key>") handler runs, so it never reaches _on_key. Bind it
+        # explicitly and return "break" to suppress traversal and cycle boxes.
+        self._next_box()
+        return "break"
+
+    def _move(self, dx, dy):
+        b = self.editor.active_box()
+        if b is not None:
+            nudge_box(b, dx, dy)
+            self.editor.redraw(); self._refresh_sidebar()
+
+    # ---- shortcuts popover ----
     def _show_shortcuts(self):
-        """Display a clean Toplevel modal window listing all keyboard shortcuts."""
-        import tkinter as tk
-        from tkinter import ttk
+        if getattr(self, "_shortcuts_win", None) is not None:
+            self._close_shortcuts()
+            return
+        tk, ttk = self.tk, self.ttk
         top = tk.Toplevel(self.root)
-        top.title("Keyboard Shortcuts")
-        top.geometry("400x420")
-        top.resizable(False, False)
+        top.title("Keyboard & mouse shortcuts")
+        top.configure(bg=BG)
         top.transient(self.root)
-        top.grab_set()
-        
-        # Apply style
-        _install_theme(top)
-        
-        frame = ttk.Frame(top, padding=16)
-        frame.pack(fill="both", expand=True)
-        
-        ttk.Label(frame, text="Keyboard Shortcuts", style="Title.TLabel").pack(anchor="w", pady=(0, 12))
-        
-        # Shortcuts grid
-        grid = ttk.Frame(frame)
-        grid.pack(fill="both", expand=True)
-        
-        shortcuts = [
-            ("Tab / n", "Cycle active box selection"),
-            ("Arrows / hjkl", "Nudge active box position"),
-            ("[ / ]", "Rotate box orientation (90° CCW / CW)"),
-            (", / .", "Fine tilt angle (-0.5° / +0.5°)"),
-            ("< / >", "Coarse tilt angle (-5.0° / +5.0°)"),
-            ("x / Del / Backspace", "Delete active box"),
-            ("s", "Save metadata sidecar"),
-            ("c", "Crop all photos to disk"),
-            ("Enter / Return", "Crop all, save, and go to next scan"),
-            ("= / -", "Next / Previous scan (no crop)"),
-            ("q", "Save metadata and quit"),
-        ]
-        
-        for idx, (key, desc) in enumerate(shortcuts):
-            k_lbl = ttk.Label(grid, text=key, font=("TkDefaultFont", 10, "bold"), foreground=ACCENT)
-            k_lbl.grid(row=idx, column=0, sticky="w", pady=4, padx=(0, 16))
-            d_lbl = ttk.Label(grid, text=desc, font=("TkDefaultFont", 10))
-            d_lbl.grid(row=idx, column=1, sticky="w", pady=4)
-            
-        ttk.Button(frame, text="Close", command=top.destroy).pack(pady=(12, 0))
+        top.resizable(False, False)
+        self._shortcuts_win = top
+        top.protocol("WM_DELETE_WINDOW", self._close_shortcuts)
+        top.bind("<Escape>", lambda e: self._close_shortcuts())
 
-    def save(self):
-        h, w = self.image.shape[:2]
-        path = save_metadata(self.scan_path, (w, h), self.boxes)
-        print(f"  saved metadata -> {path}")
+        ttk.Label(top, text="Shortcuts", style="Title.TLabel").grid(
+            row=0, column=0, columnspan=2, sticky="w", padx=16, pady=(14, 8))
+        for i, (keys, desc) in enumerate(SHORTCUTS, start=1):
+            key_lbl = tk.Label(top, text=keys, bg=BG, fg=ACCENT,
+                               font=("TkFixedFont", 10, "bold"), anchor="e")
+            key_lbl.grid(row=i, column=0, sticky="e", padx=(16, 10), pady=2)
+            tk.Label(top, text=desc, bg=BG, fg="#1a1a2e", anchor="w").grid(
+                row=i, column=1, sticky="w", padx=(0, 16), pady=2)
+        ttk.Button(top, text="Close", command=self._close_shortcuts).grid(
+            row=len(SHORTCUTS) + 1, column=0, columnspan=2, pady=(10, 14))
 
-    def run(self) -> tuple[str, str]:
-        """Show the Tkinter root loop. Returns (next_request, geometry_string)."""
+    def _close_shortcuts(self):
+        win = getattr(self, "_shortcuts_win", None)
+        if win is not None:
+            try:
+                win.destroy()
+            except self.tk.TclError:
+                pass
+            self._shortcuts_win = None
+
+    def _show(self):
+        self._load_scan()
+
+    def run(self):
         self._show()
         self.root.mainloop()
-        return self.next_request or "next", self._geometry or "1120x780"
-
-    def _nudge_angle(self, box: Box, delta: float):
-        """Adjust tilt by delta degrees, clamped to the deskew range."""
-        box.angle = max(-45.0, min(45.0, box.angle + delta))
 
 
 # ---------------------------------------------------------------------------
@@ -1091,6 +918,7 @@ def list_scans(images_dir: str) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
+    import tkinter as tk
     images_dir = argv[1] if len(argv) > 1 else "images"
     out_dir = "extracted"
     if not os.path.isdir(images_dir):
@@ -1101,9 +929,17 @@ def main(argv: list[str]) -> int:
         print(f"No scans found in {images_dir}")
         return 1
 
-    editor = Editor(scans, out_dir, scan_idx=0)
-    editor.run()
+    print("Controls (also in the GUI's '? Shortcuts' button):")
+    for keys, desc in SHORTCUTS:
+        print(f"  {keys:<22} {desc}")
 
+    try:
+        app = SplitterApp(scans, out_dir)
+    except tk.TclError:
+        print("Cannot open a GUI window. Run via the venv Python "
+              "(Homebrew Tk): .venv/bin/python split_photos.py")
+        return 1
+    app.run()
     print("Done.")
     return 0
 

@@ -1,12 +1,47 @@
 import math
 import os
 import sys
+import tempfile
 
 import cv2
 import numpy as np
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import split_photos as sp
+
+
+def _tk_usable():
+    """True if this interpreter has a Tk that can actually open a window.
+
+    The macOS system Python 3.9 ships Tk 8.5, which SIGABRTs on Tk() (an
+    uncatchable C-level abort that also pops a 'Python quit unexpectedly'
+    dialog) — so we must NOT call Tk() to detect it. Reading TkVersion opens
+    no window. Tk >= 8.6 (the .venv's Tk 9.0) works; gate the GUI tests on
+    that. Run the suite via .venv/bin/python so these tests actually execute.
+    """
+    try:
+        import tkinter
+        return tkinter.TkVersion >= 8.6
+    except Exception:
+        return False
+
+
+_TK_OK = _tk_usable()
+requires_tk = pytest.mark.skipif(not _TK_OK, reason="no usable Tk (need Tk>=8.6; use .venv)")
+
+
+def _gui_app():
+    """Build a SplitterApp on a tiny synthetic scan (caller is @requires_tk)."""
+    d = tempfile.mkdtemp()
+    p = os.path.join(d, "t.jpg")
+    img = np.full((400, 600, 3), 245, np.uint8)
+    img[80:240, 120:380] = 60
+    cv2.imwrite(p, img)
+    app = sp.SplitterApp([p], tempfile.mkdtemp())
+    app._show()
+    app.root.update()
+    return app
 
 
 def _make_scan_with_rects(rects, page=(800, 600)):
@@ -225,17 +260,30 @@ def test_normalize_rect_keeps_small_angle():
 
 
 # ---- Editor arrow-key movement ----
-def test_editor_arrow_moves_active_box(tmp_path):
-    img = np.full((200, 200, 3), 245, np.uint8)
-    boxes = [sp.Box(center=[100, 100], size=[40, 40], angle=0, id=1)]
-    ed = sp.Editor(img, boxes, str(tmp_path / "s.jpg"), str(tmp_path / "out"))
-    cx0 = boxes[0].center[0]
-    ed._move_active_kbd(20, 0)
-    assert boxes[0].center[0] > cx0
-    cy0 = boxes[0].center[1]
-    ed._move_active_kbd(0, -20)
-    assert boxes[0].center[1] < cy0
-    ed.root.destroy()
+def test_nudge_box_shifts_center():
+    b = sp.Box(center=[100, 100], size=[40, 40], angle=0, id=1)
+    sp.nudge_box(b, 20, 0)   # right
+    assert b.center == [120, 100]
+    sp.nudge_box(b, 0, -20)  # up
+    assert b.center == [120, 80]
+
+
+# ---- tilt_angle: skew nudge must not snap a far-out (legacy) angle ----
+def test_tilt_angle_small_steps_in_range():
+    assert sp.tilt_angle(0.0, 0.5) == 0.5
+    assert sp.tilt_angle(0.5, -0.5) == 0.0
+
+
+def test_tilt_angle_clamps_in_range_value_at_boundary():
+    assert sp.tilt_angle(44.8, 0.5) == 45.0   # in-range stays bounded
+    assert sp.tilt_angle(-44.8, -0.5) == -45.0
+
+
+def test_tilt_angle_does_not_snap_out_of_range_angle():
+    # regression: a box loaded at angle=-85.35 must not jump to -45 on first
+    # tilt. delta applies relative; the value just moves by delta.
+    assert sp.tilt_angle(-85.35, 0.5) == -84.85
+    assert sp.tilt_angle(-85.35, -0.5) == -85.85
 
 
 def test_resize_respects_rotation_anchor():
@@ -251,24 +299,173 @@ def test_resize_respects_rotation_anchor():
     assert abs(anchor_world_y - 60) < 1e-6
 
 
-def test_crop_to_round_photo_creates_photoimage():
-    # tkinter needs a root to create PhotoImage without TclError
-    import tkinter as tk
-    root = tk.Tk()
-    crop = np.zeros((100, 100, 3), dtype=np.uint8)
-    img = sp.crop_to_round_photo(crop, cell=64, radius=8)
-    assert img is not None
-    assert img.width() == 64
-    assert img.height() == 64
-    root.destroy()
+# ---- box_state ----
+def test_box_state_editing_when_active():
+    b = sp.Box(center=[100, 100], size=[50, 50])
+    assert sp.box_state(b, (800, 600), active=True) == "editing"
 
 
-def test_orientation_name():
-    assert sp.orientation_name(0) == "Top"
-    assert sp.orientation_name(90) == "Right"
-    assert sp.orientation_name(180) == "Bottom"
-    assert sp.orientation_name(270) == "Left"
-    assert sp.orientation_name(360) == "Top"
-    assert sp.orientation_name(450) == "Right"
-    assert sp.orientation_name(45) == "45°"
+def test_box_state_attention_zero_size():
+    b = sp.Box(center=[100, 100], size=[0, 50])
+    assert sp.box_state(b, (800, 600)) == "attention"
 
+
+def test_box_state_attention_off_canvas():
+    # box centered near the right edge, wider than the remaining margin
+    b = sp.Box(center=[590, 400], size=[300, 100])
+    assert sp.box_state(b, (800, 600)) == "attention"  # scan_shape=(h,w)
+
+
+def test_box_state_cropped_when_output_set():
+    b = sp.Box(center=[300, 300], size=[100, 80], output="scan_01.jpg")
+    assert sp.box_state(b, (800, 600)) == "cropped"
+
+
+def test_box_state_neutral_default():
+    b = sp.Box(center=[300, 300], size=[100, 80])
+    assert sp.box_state(b, (800, 600)) == "neutral"
+
+
+def test_box_state_active_beats_cropped():
+    b = sp.Box(center=[300, 300], size=[100, 80], output="x.jpg")
+    assert sp.box_state(b, (800, 600), active=True) == "editing"
+
+
+# ---- orientation_label ----
+def test_orientation_label_all_quarters():
+    assert sp.orientation_label(0) == "top"
+    assert sp.orientation_label(90) == "right"
+    assert sp.orientation_label(180) == "bottom"
+    assert sp.orientation_label(270) == "left"
+
+
+def test_orientation_label_wraps():
+    assert sp.orientation_label(360) == "top"
+    assert sp.orientation_label(-90) == "left"
+
+
+# ---- GUI smoke: an arrow keypress drives _on_key and moves the active box ----
+# NOTE: headless event_generate routes to the root regardless of focus, so this
+# can't reproduce the real-WM "button steals focus" regression (the reason the
+# app binds keys via bind_all, mirroring the face_pipeline GUIs). It does guard
+# that the _on_key -> _move path stays wired.
+@requires_tk
+def test_arrow_key_moves_active_box():
+    app = _gui_app()
+    try:
+        b = app.editor.active_box()
+        cx0 = b.center[0]
+        app.editor.canvas.event_generate("<Key>", keysym="Right")
+        app.root.update()
+        assert b.center[0] > cx0, "arrow shortcut did not move the active box"
+    finally:
+        app.root.destroy()
+
+
+@requires_tk
+def test_tab_and_n_cycle_active_box():
+    # regression: Tab is eaten by Tk focus-traversal (class bindtag) before the
+    # bind_all <Key> handler, so it must be bound on the canvas instance tag.
+    # 'n' goes through _on_key. Two boxes so cycling is observable.
+    d = tempfile.mkdtemp()
+    p = os.path.join(d, "two.jpg")
+    img = np.full((400, 600, 3), 245, np.uint8)
+    img[40:180, 60:260] = 60
+    img[40:180, 320:540] = 60
+    cv2.imwrite(p, img)
+    app = sp.SplitterApp([p], tempfile.mkdtemp())
+    app._show()
+    app.root.update()
+    try:
+        assert len(app.boxes) >= 2
+        assert app.editor.active == 0
+        app.editor.canvas.event_generate("<Tab>")
+        app.root.update()
+        assert app.editor.active == 1, "Tab did not advance the active box"
+        app.editor.canvas.event_generate("<Key>", keysym="n")
+        app.root.update()
+        assert app.editor.active == 0, "n did not advance (wrap) the active box"
+    finally:
+        app.root.destroy()
+
+
+@requires_tk
+def test_bracket_keys_rotate_orientation():
+    # regression: punctuation keys were matched on X11 keysym names
+    # ("bracketright") but this Tk reports event.keysym/char as "]", so they
+    # silently never fired. Match on event.char instead.
+    app = _gui_app()
+    try:
+        b = app.editor.active_box()
+        assert b.orientation == 0
+        app.editor.canvas.event_generate("<Key>", keysym="bracketright")  # ]
+        app.root.update()
+        assert b.orientation == 90, "] did not rotate"
+        app.editor.canvas.event_generate("<Key>", keysym="bracketright")  # ]
+        app.root.update()
+        assert b.orientation == 180
+    finally:
+        app.root.destroy()
+
+
+@requires_tk
+def test_sidebar_rows_have_thumbnails_and_word_orientation():
+    app = _gui_app()
+    try:
+        # one thumbnail PhotoImage kept per box (prevents Tk GC)
+        assert len(app._row_thumbs) == len(app.boxes) >= 1
+        # active-box panel shows a word, not degrees
+        assert app.orient_var.get() in ("top", "right", "bottom", "left")
+        app._orient(90)  # Rotate
+        app.root.update()
+        assert app.orient_var.get() == "right"
+    finally:
+        app.root.destroy()
+
+
+@requires_tk
+def test_shortcuts_popover_opens_and_closes():
+    app = _gui_app()
+    try:
+        assert app._shortcuts_win is None
+        app._show_shortcuts()
+        app.root.update()
+        assert app._shortcuts_win is not None
+        # every shortcut row is rendered (key label + description = 2 widgets
+        # each, plus title + close button)
+        assert app._shortcuts_win.winfo_exists()
+        app._close_shortcuts()
+        app.root.update()
+        assert app._shortcuts_win is None
+    finally:
+        app.root.destroy()
+
+
+@requires_tk
+def test_drag_selection_draws_preview():
+    app = _gui_app()
+    try:
+        # Initial drag state should be None
+        assert app.editor.drag is None
+        assert app.editor.drag_current is None
+        
+        # Simulate pressing at (100, 100)
+        app.editor.canvas.event_generate("<Button-1>", x=100, y=100)
+        app.root.update()
+        assert app.editor.drag == "new"
+        assert app.editor.drag_start == app.editor._full(100, 100)
+        assert app.editor.drag_current == app.editor._full(100, 100)
+        
+        # Simulate dragging to (200, 200)
+        app.editor.canvas.event_generate("<B1-Motion>", x=200, y=200)
+        app.root.update()
+        assert app.editor.drag == "new"
+        assert app.editor.drag_current == app.editor._full(200, 200)
+        
+        # Simulate release
+        app.editor.canvas.event_generate("<ButtonRelease-1>", x=200, y=200)
+        app.root.update()
+        assert app.editor.drag is None
+        assert app.editor.drag_current is None
+    finally:
+        app.root.destroy()
