@@ -272,6 +272,12 @@ def resize_box(box: Box, handle: tuple[int, int], pt: tuple[float, float]) -> No
     box.size[1] = bh
 
 
+def orientation_name(orient: int) -> str:
+    """Map orientation degrees to friendly direction names."""
+    m = {0: "Top", 90: "Right", 180: "Bottom", 270: "Left"}
+    return m.get(int(orient) % 360, f"{orient}°")
+
+
 def _orient_arrow(box: Box) -> tuple[tuple[int, int], tuple[int, int]]:
     """Endpoints (full coords) of an arrow pointing to the box's 'top'."""
     cx, cy = box.center
@@ -414,7 +420,8 @@ class Editor:
         self.root = tk.Tk()
         self.root.title("Photo Splitter")
         self.root.geometry("1120x780")
-        self.root.resizable(False, False)
+        self.root.resizable(True, True)
+        self.root.minsize(1120, 780)
         _install_theme(self.root)
 
         # Top Progress Header
@@ -437,17 +444,16 @@ class Editor:
         ttk.Button(left_btns, text="← Back", command=self._back).pack(side="left", padx=4)
         ttk.Button(left_btns, text="Save & Next →", style="Primary.TButton", command=self._next).pack(side="left", padx=4)
         
-        help_lbl = ttk.Label(bar, text="Tab/n: Cycle box | x: Del | []: Rotate | ,.: Tilt | Enter: Save & Next", style="Sub.TLabel")
-        help_lbl.pack(side="right", padx=4)
+        ttk.Button(bar, text="Keyboard Shortcuts", command=self._show_shortcuts).pack(side="right", padx=4)
 
         # Main Split Body
         body = ttk.Frame(self.root)
         body.pack(side="top", fill="both", expand=True, padx=16, pady=4)
 
         # Left View Pane
-        photo_pane = ttk.Frame(body, width=self.PHOTO_W + 8, height=self.PHOTO_H + 8)
-        photo_pane.pack(side="left")
-        photo_pane.pack_propagate(False)
+        photo_pane = ttk.Frame(body)
+        photo_pane.pack(side="left", fill="both", expand=True)
+        photo_pane.bind("<Configure>", self._on_pane_configure)
         self.canvas = tk.Label(photo_pane, bg=BG)
         self.canvas.pack(expand=True)
         
@@ -671,7 +677,7 @@ class Editor:
             lbl_badge.grid(row=0, column=1, sticky="w")
             lbl_badge.bind("<Button-1>", lambda e, i=idx: self._select_card(i))
             
-            desc = f"{int(round(box.size[0]))}x{int(round(box.size[1]))} px\nAngle: {box.angle:.1f}° | Orient: {box.orientation}°"
+            desc = f"{int(round(box.size[0]))}x{int(round(box.size[1]))} px\nAngle: {box.angle:.1f}° | Orient: {orientation_name(box.orientation)}"
             lbl_desc = self.ttk.Label(card, text=desc, font=("TkDefaultFont", 9))
             lbl_desc.grid(row=1, column=1, sticky="w", pady=(2, 0))
             lbl_desc.bind("<Button-1>", lambda e, i=idx: self._select_card(i))
@@ -809,6 +815,68 @@ class Editor:
         self.save()
         print(f"  cropped {saved} photo(s) to {self.out_dir}/")
 
+    def _on_pane_configure(self, event):
+        """Handle viewer frame resize dynamically updating image fit."""
+        w, h = event.width, event.height
+        if w < 100 or h < 100:
+            return
+        # Leave a small margin for padding
+        target_w = w - 8
+        target_h = h - 8
+        if abs(target_w - self.PHOTO_W) > 5 or abs(target_h - self.PHOTO_H) > 5:
+            self.PHOTO_W = target_w
+            self.PHOTO_H = target_h
+            h_img, w_img = self.image.shape[:2]
+            self.scale = min(self.PHOTO_W / w_img, self.PHOTO_H / h_img, 1.0)
+            self._base = scale_base(self.image, self.scale)
+            self._dirty = True
+            self._draw_overlay()
+
+    def _show_shortcuts(self):
+        """Display a clean Toplevel modal window listing all keyboard shortcuts."""
+        import tkinter as tk
+        from tkinter import ttk
+        top = tk.Toplevel(self.root)
+        top.title("Keyboard Shortcuts")
+        top.geometry("400x420")
+        top.resizable(False, False)
+        top.transient(self.root)
+        top.grab_set()
+        
+        # Apply style
+        _install_theme(top)
+        
+        frame = ttk.Frame(top, padding=16)
+        frame.pack(fill="both", expand=True)
+        
+        ttk.Label(frame, text="Keyboard Shortcuts", style="Title.TLabel").pack(anchor="w", pady=(0, 12))
+        
+        # Shortcuts grid
+        grid = ttk.Frame(frame)
+        grid.pack(fill="both", expand=True)
+        
+        shortcuts = [
+            ("Tab / n", "Cycle active box selection"),
+            ("Arrows / hjkl", "Nudge active box position"),
+            ("[ / ]", "Rotate box orientation (90° CCW / CW)"),
+            (", / .", "Fine tilt angle (-0.5° / +0.5°)"),
+            ("< / >", "Coarse tilt angle (-5.0° / +5.0°)"),
+            ("x / Del / Backspace", "Delete active box"),
+            ("s", "Save metadata sidecar"),
+            ("c", "Crop all photos to disk"),
+            ("Enter / Return", "Crop all, save, and go to next scan"),
+            ("= / -", "Next / Previous scan (no crop)"),
+            ("q", "Save metadata and quit"),
+        ]
+        
+        for idx, (key, desc) in enumerate(shortcuts):
+            k_lbl = ttk.Label(grid, text=key, font=("TkDefaultFont", 10, "bold"), foreground=ACCENT)
+            k_lbl.grid(row=idx, column=0, sticky="w", pady=4, padx=(0, 16))
+            d_lbl = ttk.Label(grid, text=desc, font=("TkDefaultFont", 10))
+            d_lbl.grid(row=idx, column=1, sticky="w", pady=4)
+            
+        ttk.Button(frame, text="Close", command=top.destroy).pack(pady=(12, 0))
+
     def save(self):
         h, w = self.image.shape[:2]
         path = save_metadata(self.scan_path, (w, h), self.boxes)
@@ -845,13 +913,6 @@ def main(argv: list[str]) -> int:
     if not scans:
         print(f"No scans found in {images_dir}")
         return 1
-
-    print("Controls: drag inside=move | drag edge/corner=resize | "
-          "drag empty=new box | arrows/hjkl=nudge box | n/Tab=next box | "
-          "[ ]=orient | , . =tilt 0.5deg | < > =tilt 5deg | x=delete | "
-          "p=toggle preview (Esc closes) | c=crop all | s=save | "
-          "Enter=crop all + next scan | = / - =next/prev scan (no crop) | "
-          "q=save & quit")
 
     idx = 0
     while 0 <= idx < len(scans):
