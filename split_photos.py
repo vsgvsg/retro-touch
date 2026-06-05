@@ -454,6 +454,7 @@ class Editor:
         
         self.drag = None          # None | 'move' | 'new' | ('resize', handle)
         self.drag_start = None    # full-coord
+        self.drag_current = None  # full-coord
         self.next_request = None  # 'next' | 'prev' | 'quit'
         self._preview_open = False
         self._dirty = True
@@ -639,6 +640,7 @@ class Editor:
         # 3) Empty area -> start new box
         self.drag = "new"
         self.drag_start = (fx, fy)
+        self.drag_current = (fx, fy)
 
     def on_mouse_drag(self, event):
         if not self.drag:
@@ -653,6 +655,8 @@ class Editor:
             self.drag_start = (fx, fy)
         elif isinstance(self.drag, tuple) and self.drag[0] == "resize" and b is not None:
             resize_box(b, self.drag[1], (fx, fy))
+        elif self.drag == "new":
+            self.drag_current = (fx, fy)
         self._dirty = True
         self.root.after_idle(self._draw_overlay)
 
@@ -671,6 +675,7 @@ class Editor:
                 self.active = len(self.boxes) - 1
         self.drag = None
         self.drag_start = None
+        self.drag_current = None
         self._dirty = True
         self._show()  # rebuilds sidebar cards with new thumbnails
 
@@ -869,6 +874,18 @@ class Editor:
                                 (int(p1[0] * self.scale), int(p1[1] * self.scale)),
                                 (0, 0, 255), 2, tipLength=0.3)
                                 
+        # Draw dynamic preview of the box currently being drawn
+        if self.drag == "new" and self.drag_start is not None and self.drag_current is not None:
+            x0, y0 = self.drag_start
+            x1, y1 = self.drag_current
+            cx, cy = (x1 + x0) / 2, (y1 + y0) / 2
+            bw, bh = abs(x1 - x0), abs(y1 - y0)
+            if bw > 5 and bh > 5:
+                rect = ((cx * self.scale, cy * self.scale),
+                        (bw * self.scale, bh * self.scale), 0.0)
+                pts = cv2.boxPoints(rect).astype(np.int32)
+                cv2.polylines(disp, [pts], True, (47, 175, 106), 2)
+
         rgb = cv2.cvtColor(disp, cv2.COLOR_BGR2RGB)
         self._photo_img = ImageTk.PhotoImage(Image.fromarray(rgb))
         self.canvas.configure(image=self._photo_img)
