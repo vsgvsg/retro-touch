@@ -385,20 +385,128 @@ class Editor:
     """Interactive HighGUI editor for one scan."""
 
     def __init__(self, image: np.ndarray, boxes: list[Box], scan_path: str, out_dir: str):
+        import tkinter as tk
+        self.tk = tk
         self.image = image
         self.boxes = boxes
         self.scan_path = scan_path
         self.out_dir = out_dir
         self.active = 0 if boxes else -1
+        
+        # Fit scan image to fixed pane
+        self.PHOTO_W, self.PHOTO_H = 760, 680
         h, w = image.shape[:2]
-        # fit longest side to ~1000 px by default
-        self.scale = min(1000 / w, 1000 / h, 1.0)
+        self.scale = min(self.PHOTO_W / w, self.PHOTO_H / h, 1.0)
+        
         self.drag = None          # None | 'move' | 'new' | ('resize', handle)
         self.drag_start = None    # full-coord
-        self.next_request = None  # set to 'next' or 'quit' to end loop
+        self.next_request = None  # 'next' | 'prev' | 'quit'
         self._preview_open = False
-        self._base = scale_base(image, self.scale)  # cached scaled image
-        self._dirty = True        # redraw only when state changed
+        self._base = scale_base(image, self.scale)
+        self._dirty = True
+        self._cells = []          # crop thumbnails PhotoImage references
+        
+        # Build Window
+        from tkinter import ttk
+        self.ttk = ttk
+        self.root = tk.Tk()
+        self.root.title("Photo Splitter")
+        self.root.geometry("1120x780")
+        self.root.resizable(False, False)
+        _install_theme(self.root)
+
+        # Top Progress Header
+        head = ttk.Frame(self.root)
+        head.pack(side="top", fill="x", padx=16, pady=(10, 4))
+        self.title_var = tk.StringVar()
+        ttk.Label(head, textvariable=self.title_var, style="Title.TLabel").pack(anchor="w")
+        
+        # We'll set the progress value dynamically in _show()
+        self.progress = ttk.Progressbar(head, cursor="hand2")
+        self.progress.pack(fill="x", pady=(6, 0))
+        self.progress.bind("<Button-1>", self._on_progress_click)
+
+        # Bottom Navigation
+        bar = ttk.Frame(self.root)
+        bar.pack(side="bottom", fill="x", padx=16, pady=10)
+        
+        left_btns = ttk.Frame(bar)
+        left_btns.pack(side="left")
+        ttk.Button(left_btns, text="← Back", command=self._back).pack(side="left", padx=4)
+        ttk.Button(left_btns, text="Save & Next →", style="Primary.TButton", command=self._next).pack(side="left", padx=4)
+        
+        help_lbl = ttk.Label(bar, text="Tab/n: Cycle box | x: Del | []: Rotate | ,.: Tilt | Enter: Save & Next", style="Sub.TLabel")
+        help_lbl.pack(side="right", padx=4)
+
+        # Main Split Body
+        body = ttk.Frame(self.root)
+        body.pack(side="top", fill="both", expand=True, padx=16, pady=4)
+
+        # Left View Pane
+        photo_pane = ttk.Frame(body, width=self.PHOTO_W + 8, height=self.PHOTO_H + 8)
+        photo_pane.pack(side="left")
+        photo_pane.pack_propagate(False)
+        self.canvas = tk.Label(photo_pane, bg=BG)
+        self.canvas.pack(expand=True)
+        
+        # Bind mouse events to the image viewer
+        self.canvas.bind("<Button-1>", self.on_mouse_down)
+        self.canvas.bind("<B1-Motion>", self.on_mouse_drag)
+        self.canvas.bind("<ButtonRelease-1>", self.on_mouse_up)
+
+        # Right Scrollable Card Sidebar
+        right = ttk.Frame(body, width=320)
+        right.pack(side="right", fill="y", padx=(8, 0))
+        right.pack_propagate(False)
+        
+        self.rows_canvas = tk.Canvas(right, highlightthickness=0, bg=BG)
+        self._vbar = self.ttk.Scrollbar(right, orient="vertical", command=self.rows_canvas.yview)
+        self.rows_canvas.configure(yscrollcommand=self._vbar.set)
+        self.rows_canvas.pack(side="left", fill="both", expand=True)
+        
+        self.rows_frame = tk.Frame(self.rows_canvas, bg=BG)
+        self._rows_window = self.rows_canvas.create_window((0, 0), window=self.rows_frame, anchor="nw")
+        
+        self.rows_frame.bind("<Configure>", lambda e: (
+            self.rows_canvas.configure(scrollregion=self.rows_canvas.bbox("all")),
+            self._sync_scrollbar()
+        ))
+        self.rows_canvas.bind("<Configure>", lambda e: (
+            self.rows_canvas.itemconfigure(self._rows_window, width=e.width),
+            self._sync_scrollbar()
+        ))
+        self.rows_canvas.bind_all("<MouseWheel>", lambda e: self.rows_canvas.yview_scroll(
+            int(-1 * (e.delta / 120)), "units"
+        ))
+
+        # Bind Window Keys
+        self.root.bind("<Tab>", lambda e: (self._cycle_active(), "break"))
+        self.root.bind("<Key-n>", lambda e: self._cycle_active())
+        self.root.bind("<Left>", lambda e: self._move_active_kbd(-20, 0))
+        self.root.bind("<Right>", lambda e: self._move_active_kbd(20, 0))
+        self.root.bind("<Up>", lambda e: self._move_active_kbd(0, -20))
+        self.root.bind("<Down>", lambda e: self._move_active_kbd(0, 20))
+        self.root.bind("<Key-h>", lambda e: self._move_active_kbd(-20, 0))
+        self.root.bind("<Key-l>", lambda e: self._move_active_kbd(20, 0))
+        self.root.bind("<Key-k>", lambda e: self._move_active_kbd(0, -20))
+        self.root.bind("<Key-j>", lambda e: self._move_active_kbd(0, 20))
+        self.root.bind("<Key-bracketleft>", lambda e: self._rotate_active(-90))
+        self.root.bind("<Key-bracketright>", lambda e: self._rotate_active(90))
+        self.root.bind("<Key-comma>", lambda e: self._nudge_active(-0.5))
+        self.root.bind("<Key-period>", lambda e: self._nudge_active(0.5))
+        self.root.bind("<Key-less>", lambda e: self._nudge_active(-5.0))
+        self.root.bind("<Key-greater>", lambda e: self._nudge_active(5.0))
+        self.root.bind("<Key-x>", lambda e: self._delete_active())
+        self.root.bind("<BackSpace>", lambda e: self._delete_active())
+        self.root.bind("<Delete>", lambda e: self._delete_active())
+        self.root.bind("<Return>", lambda e: self._next())
+        self.root.bind("<Key-equal>", lambda e: self._next_no_crop())
+        self.root.bind("<Key-minus>", lambda e: self._prev_no_crop())
+        self.root.bind("<Key-s>", lambda e: self.save())
+        self.root.bind("<Key-c>", lambda e: self.crop_all())
+        self.root.bind("<Key-q>", lambda e: self._quit())
+        
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ---- coordinate helpers ----
     def _full(self, x, y):
