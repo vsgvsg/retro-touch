@@ -384,13 +384,15 @@ BANNER_H = 26  # status banner height in px, drawn above the image
 class Editor:
     """Interactive HighGUI editor for one scan."""
 
-    def __init__(self, image: np.ndarray, boxes: list[Box], scan_path: str, out_dir: str):
+    def __init__(self, image: np.ndarray, boxes: list[Box], scan_path: str, out_dir: str, scan_idx: int = 0, total_scans: int = 1):
         import tkinter as tk
         self.tk = tk
         self.image = image
         self.boxes = boxes
         self.scan_path = scan_path
         self.out_dir = out_dir
+        self.scan_idx = scan_idx
+        self.total_scans = total_scans
         self.active = 0 if boxes else -1
         
         # Fit scan image to fixed pane
@@ -715,87 +717,80 @@ class Editor:
         self.rows_canvas.yview_moveto(max(0.0, frac - 0.2))
 
 
-    # ---- keyboard ----
-    def on_key(self, key):
-        """key is a full waitKeyEx code (not masked), or -1 for no key."""
-        b = self._active_box()
-        step = 20.0  # full-coord pixels per arrow press
-        if key in (ord("n"), ord("N"), 9):  # n or Tab
-            if self.boxes:
-                self.active = (self.active + 1) % len(self.boxes)
-        elif key in self.ARROW_LEFT or key == ord("h"):
-            self._move_active(-step, 0)
-        elif key in self.ARROW_RIGHT or key == ord("l"):
-            self._move_active(step, 0)
-        elif key in self.ARROW_UP or key == ord("k"):
-            self._move_active(0, -step)
-        elif key in self.ARROW_DOWN or key == ord("j"):
-            self._move_active(0, step)
-        elif key == ord("[") and b is not None:
-            b.orientation = (b.orientation - 90) % 360
-        elif key == ord("]") and b is not None:
-            b.orientation = (b.orientation + 90) % 360
-        elif key == ord(",") and b is not None:   # fine tilt counter-clockwise
-            self._nudge_angle(b, -0.5)
-        elif key == ord(".") and b is not None:   # fine tilt clockwise
-            self._nudge_angle(b, 0.5)
-        elif key == ord("<") and b is not None:   # coarse tilt counter-clockwise
-            self._nudge_angle(b, -5.0)
-        elif key == ord(">") and b is not None:   # coarse tilt clockwise
-            self._nudge_angle(b, 5.0)
-        elif key in (ord("x"), 8, 127) and b is not None:  # x, Backspace, or Del
-            del self.boxes[self.active]
-            self._renumber()
-            self.active = min(self.active, len(self.boxes) - 1)
-        elif key == ord("p") and b is not None:  # toggle preview
-            if self._preview_open:
-                self._close_preview()
-            else:
-                self.preview(b)
-        elif key == 27:  # Esc dismisses the preview
-            self._close_preview()
-        elif key == ord("c"):
-            self.crop_all()
-        elif key == ord("s"):
-            self.save()
-        elif key in (13, 10):  # Enter / Return: crop, save, then next scan
-            self.crop_all()  # crop_all() also saves metadata
-            self.next_request = "next"
-        elif key == ord("="):  # next scan without cropping (saves edits)
-            self.save()
-            self.next_request = "next"
-        elif key == ord("-"):  # previous scan without cropping (saves edits)
-            self.save()
-            self.next_request = "prev"
-        elif key == ord("q"):
-            self.save()  # persist edits so a restart won't re-detect over them
-            self.next_request = "quit"
-        self._dirty = True
-
-    # ---- actions ----
-    PREVIEW_WINDOW = "Preview (p or Esc to close)"
-
-    def preview(self, box: Box):
-        try:
-            out = crop_box(self.image, box)
-        except ValueError:
-            print("  ! cannot preview: box has zero size")
+    def _draw_overlay(self):
+        """Draw OpenCV bounding boxes on top of the pre-scaled scan base."""
+        if not self._dirty:
             return
-        pv = out
-        ph, pw = pv.shape[:2]
-        s = min(700 / pw, 700 / ph, 1.0)
-        if s < 1.0:
-            pv = cv2.resize(pv, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
-        cv2.imshow(self.PREVIEW_WINDOW, pv)
-        self._preview_open = True
+        import cv2
+        from PIL import Image, ImageTk
+        
+        disp = self._base.copy()
+        for i, b in enumerate(self.boxes):
+            rect = ((b.center[0] * self.scale, b.center[1] * self.scale),
+                    (b.size[0] * self.scale, b.size[1] * self.scale), b.angle)
+            pts = cv2.boxPoints(rect).astype(np.int32)
+            color = (47, 175, 106) if i == self.active else (240, 108, 90) # BGR: active=green, inactive=blueish
+            cv2.polylines(disp, [pts], True, color, 2)
+            
+            if i == self.active:
+                p0, p1 = _orient_arrow(b)
+                cv2.arrowedLine(disp, (int(p0[0] * self.scale), int(p0[1] * self.scale)),
+                                (int(p1[0] * self.scale), int(p1[1] * self.scale)),
+                                (0, 0, 255), 2, tipLength=0.3)
+                                
+        rgb = cv2.cvtColor(disp, cv2.COLOR_BGR2RGB)
+        self._photo_img = ImageTk.PhotoImage(Image.fromarray(rgb))
+        self.canvas.configure(image=self._photo_img)
+        self._dirty = False
+
+    def _show(self):
+        scan_name = os.path.basename(self.scan_path)
+        self.title_var.set(f"Scan: {scan_name} ({self.scan_idx + 1} of {self.total_scans}) — {len(self.boxes)} photo(s) detected")
+        self.progress.configure(maximum=self.total_scans, value=self.scan_idx)
+        self._build_sidebar_cards()
+        self._draw_overlay()
+        self._scroll_active_into_view()
+
+    def _on_progress_click(self, event):
+        width = self.progress.winfo_width()
+        if width <= 0 or self.total_scans == 0:
+            return
+        frac = max(0.0, min(1.0, event.x / width))
+        target = min(self.total_scans - 1, int(frac * self.total_scans))
+        if target == self.scan_idx:
+            return
+        self.save()
+        self.next_request = f"jump_{target}"
+        self.root.destroy()
+
+    def _next(self):
+        self.crop_all()
+        self.next_request = "next"
+        self.root.destroy()
+
+    def _next_no_crop(self):
+        self.save()
+        self.next_request = "next"
+        self.root.destroy()
+
+    def _prev_no_crop(self):
+        self.save()
+        self.next_request = "prev"
+        self.root.destroy()
+
+    def _back(self):
+        self._prev_no_crop()
+
+    def _quit(self):
+        self.save()
+        self.next_request = "quit"
+        self.root.destroy()
+
+    def _on_close(self):
+        self._quit()
 
     def _close_preview(self):
-        if self._preview_open:
-            try:
-                cv2.destroyWindow(self.PREVIEW_WINDOW)
-            except cv2.error:
-                pass
-            self._preview_open = False
+        pass
 
     def crop_all(self):
         os.makedirs(self.out_dir, exist_ok=True)
@@ -819,23 +814,11 @@ class Editor:
         path = save_metadata(self.scan_path, (w, h), self.boxes)
         print(f"  saved metadata -> {path}")
 
-    # ---- main loop for this scan ----
     def run(self) -> str:
-        cv2.namedWindow(WINDOW, cv2.WINDOW_AUTOSIZE)
-        cv2.setMouseCallback(WINDOW, self.on_mouse)
-        while True:
-            if self._dirty:  # redraw only when state changed (cheap overlays)
-                disp = render(self._base, self.boxes, self.active, self.scale)
-                cv2.imshow(WINDOW, disp)
-                self._dirty = False
-            key = cv2.waitKeyEx(15)  # full keycode (arrows survive); -1 if none
-            if key != -1:
-                self.on_key(key)
-            if self.next_request:
-                break
-        req = self.next_request
-        self.next_request = None
-        return req
+        """Show the Tkinter root loop."""
+        self._show()
+        self.root.mainloop()
+        return self.next_request or "next"
 
     def _nudge_angle(self, box: Box, delta: float):
         """Adjust tilt by delta degrees, clamped to the deskew range."""
@@ -885,17 +868,17 @@ def main(argv: list[str]) -> int:
         else:
             print(f"{os.path.basename(path)}: loaded {len(boxes)} box(es) from metadata")
 
-        editor = Editor(image, boxes, path, out_dir)
+        editor = Editor(image, boxes, path, out_dir, idx, len(scans))
         req = editor.run()
-        editor._close_preview()  # tidy the preview window before next scan
         if req == "quit":
             break
         elif req == "prev":
             idx = max(0, idx - 1)
+        elif req.startswith("jump_"):
+            idx = int(req.split("_")[1])
         else:  # "next"
             idx += 1
 
-    cv2.destroyAllWindows()
     print("Done.")
     return 0
 
