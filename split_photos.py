@@ -418,7 +418,7 @@ BANNER_H = 26  # status banner height in px, drawn above the image
 class Editor:
     """Interactive HighGUI editor for one scan."""
 
-    def __init__(self, image: np.ndarray, boxes: list[Box], scan_path: str, out_dir: str, scan_idx: int = 0, total_scans: int = 1):
+    def __init__(self, image: np.ndarray, boxes: list[Box], scan_path: str, out_dir: str, scan_idx: int = 0, total_scans: int = 1, geometry: str | None = None):
         import tkinter as tk
         self.tk = tk
         self.image = image
@@ -428,6 +428,8 @@ class Editor:
         self.scan_idx = scan_idx
         self.total_scans = total_scans
         self.active = 0 if boxes else -1
+        self._geometry = geometry
+        self._card_refs = []
         
         # Fit scan image to fixed pane
         self.PHOTO_W, self.PHOTO_H = 760, 680
@@ -448,7 +450,10 @@ class Editor:
         self.ttk = ttk
         self.root = tk.Tk()
         self.root.title("Photo Splitter")
-        self.root.geometry("1120x780")
+        if self._geometry:
+            self.root.geometry(self._geometry)
+        else:
+            self.root.geometry("1120x780")
         self.root.resizable(True, True)
         self.root.minsize(1120, 780)
         _install_theme(self.root)
@@ -676,14 +681,16 @@ class Editor:
         for child in self.rows_frame.winfo_children():
             child.destroy()
         self._cells = []
+        self._card_refs = []
         
         for idx, box in enumerate(self.boxes):
             is_active = (idx == self.active)
             bg_color = "#f0f0f8" if is_active else BG
             border_color = ACCENT if is_active else CARD_BORDER
             
-            # Card Outer frame
-            card = self.ttk.Frame(self.rows_frame, padding=8)
+            # Card Outer frame using standard tk.Frame for direct background color config
+            card = self.tk.Frame(self.rows_frame, bg=bg_color, bd=1, relief="flat",
+                                 highlightbackground=border_color, highlightthickness=1)
             card.pack(fill="x", padx=6, pady=4)
             
             # Rounded thumbnail
@@ -697,24 +704,24 @@ class Editor:
             
             # Card Layout Grid
             lbl_thumb = self.tk.Label(card, image=thumb, bg=bg_color)
-            lbl_thumb.grid(row=0, column=0, rowspan=2, padx=(0, 8))
+            lbl_thumb.grid(row=0, column=0, rowspan=2, padx=(0, 8), pady=8)
             
             # Click card selection bind
             lbl_thumb.bind("<Button-1>", lambda e, i=idx: self._select_card(i))
             
             badge_color = STATE_COLORS["active"] if is_active else STATE_COLORS["inactive"]
             lbl_badge = self.tk.Label(card, text=f" #{box.id} ", bg=badge_color, fg="#ffffff", font=("TkDefaultFont", 10, "bold"))
-            lbl_badge.grid(row=0, column=1, sticky="w")
+            lbl_badge.grid(row=0, column=1, sticky="w", pady=(8, 0))
             lbl_badge.bind("<Button-1>", lambda e, i=idx: self._select_card(i))
             
             desc = f"{int(round(box.size[0]))}x{int(round(box.size[1]))} px\nAngle: {box.angle:.1f}° | Orient: {orientation_name(box.orientation)}"
-            lbl_desc = self.ttk.Label(card, text=desc, font=("TkDefaultFont", 9))
-            lbl_desc.grid(row=1, column=1, sticky="w", pady=(2, 0))
+            lbl_desc = self.tk.Label(card, text=desc, bg=bg_color, fg="#1a1a2e", font=("TkDefaultFont", 9), anchor="w", justify="left")
+            lbl_desc.grid(row=1, column=1, sticky="w", pady=(2, 8))
             lbl_desc.bind("<Button-1>", lambda e, i=idx: self._select_card(i))
             
-            # Card Action Buttons
-            btn_frame = self.ttk.Frame(card)
-            btn_frame.grid(row=2, column=0, columnspan=2, pady=(6, 0), sticky="e")
+            # Card Action Buttons frame
+            btn_frame = self.tk.Frame(card, bg=bg_color)
+            btn_frame.grid(row=2, column=0, columnspan=2, pady=(0, 8), padx=8, sticky="e")
             
             btn_rot = self.ttk.Button(btn_frame, text="↺ Rotate", command=lambda i=idx: self._rotate_card(i))
             btn_rot.pack(side="left", padx=2)
@@ -722,10 +729,50 @@ class Editor:
             btn_del = self.ttk.Button(btn_frame, text="Delete", command=lambda i=idx: self._delete_card(i))
             btn_del.pack(side="left", padx=2)
             
-            # Background visual overrides
-            card.configure(style="Card.TFrame")
             # Let's bind main frame clicks
             card.bind("<Button-1>", lambda e, i=idx: self._select_card(i))
+            
+            # Store references to allow updating individual controls
+            card_info = {
+                "card": card,
+                "lbl_thumb": lbl_thumb,
+                "lbl_badge": lbl_badge,
+                "lbl_desc": lbl_desc,
+                "btn_frame": btn_frame,
+            }
+            self._card_refs.append(card_info)
+
+    def _update_sidebar_cards(self):
+        """Update existing card controls dynamically instead of destroying/recreating them."""
+        if len(self.boxes) != len(self._card_refs):
+            self._build_sidebar_cards()
+            return
+            
+        self._cells = []
+        for idx, box in enumerate(self.boxes):
+            ref = self._card_refs[idx]
+            is_active = (idx == self.active)
+            bg_color = "#f0f0f8" if is_active else BG
+            border_color = ACCENT if is_active else CARD_BORDER
+            
+            # Update thumbnail image
+            try:
+                crop = crop_box(self.image, box)
+            except ValueError:
+                crop = np.full((64, 64, 3), 200, dtype=np.uint8)
+            thumb = crop_to_round_photo(crop, cell=64, radius=8)
+            self._cells.append(thumb)
+            
+            # Configure properties on existing controls
+            ref["card"].configure(bg=bg_color, highlightbackground=border_color)
+            ref["lbl_thumb"].configure(image=thumb, bg=bg_color)
+            
+            badge_color = STATE_COLORS["active"] if is_active else STATE_COLORS["inactive"]
+            ref["lbl_badge"].configure(bg=badge_color)
+            
+            desc = f"{int(round(box.size[0]))}x{int(round(box.size[1]))} px\nAngle: {box.angle:.1f}° | Orient: {orientation_name(box.orientation)}"
+            ref["lbl_desc"].configure(text=desc, bg=bg_color)
+            ref["btn_frame"].configure(bg=bg_color)
 
     def _select_card(self, idx):
         self.active = idx
@@ -783,7 +830,7 @@ class Editor:
         scan_name = os.path.basename(self.scan_path)
         self.title_var.set(f"Scan: {scan_name} ({self.scan_idx + 1} of {self.total_scans}) — {len(self.boxes)} photo(s) detected")
         self.progress.configure(maximum=self.total_scans, value=self.scan_idx)
-        self._build_sidebar_cards()
+        self._update_sidebar_cards()
         self._draw_overlay()
         self._scroll_active_into_view()
 
@@ -943,11 +990,11 @@ class Editor:
         path = save_metadata(self.scan_path, (w, h), self.boxes)
         print(f"  saved metadata -> {path}")
 
-    def run(self) -> str:
-        """Show the Tkinter root loop."""
+    def run(self) -> tuple[str, str]:
+        """Show the Tkinter root loop. Returns (next_request, geometry_string)."""
         self._show()
         self.root.mainloop()
-        return self.next_request or "next"
+        return self.next_request or "next", self._geometry or "1120x780"
 
     def _nudge_angle(self, box: Box, delta: float):
         """Adjust tilt by delta degrees, clamped to the deskew range."""
@@ -976,6 +1023,7 @@ def main(argv: list[str]) -> int:
         return 1
 
     idx = 0
+    geometry = None
     while 0 <= idx < len(scans):
         path = scans[idx]
         image = cv2.imread(path)
@@ -990,8 +1038,8 @@ def main(argv: list[str]) -> int:
         else:
             print(f"{os.path.basename(path)}: loaded {len(boxes)} box(es) from metadata")
 
-        editor = Editor(image, boxes, path, out_dir, idx, len(scans))
-        req = editor.run()
+        editor = Editor(image, boxes, path, out_dir, idx, len(scans), geometry=geometry)
+        req, geometry = editor.run()
         if req == "quit":
             break
         elif req == "prev":
