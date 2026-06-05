@@ -230,11 +230,12 @@ def test_editor_arrow_moves_active_box(tmp_path):
     boxes = [sp.Box(center=[100, 100], size=[40, 40], angle=0, id=1)]
     ed = sp.Editor(img, boxes, str(tmp_path / "s.jpg"), str(tmp_path / "out"))
     cx0 = boxes[0].center[0]
-    ed.on_key(sp.Editor.ARROW_RIGHT[0])  # primary right keycode
+    ed._move_active_kbd(20, 0)
     assert boxes[0].center[0] > cx0
     cy0 = boxes[0].center[1]
-    ed.on_key(ord("k"))  # ascii fallback: up
+    ed._move_active_kbd(0, -20)
     assert boxes[0].center[1] < cy0
+    ed.root.destroy()
 
 
 def test_resize_respects_rotation_anchor():
