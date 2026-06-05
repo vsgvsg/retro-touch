@@ -318,9 +318,67 @@ def render(base: np.ndarray, boxes: list[Box], active_idx: int, scale: float) ->
 # ---------------------------------------------------------------------------
 # Editor (interactive HighGUI)
 # ---------------------------------------------------------------------------
+# ---- shared GUI theme (ttk) ----
+ACCENT = "#5a6cf0"
+BG = "#fafaff"
+CARD_BORDER = "#ececf2"
+STATE_COLORS = {
+    "active": "#2faf6a",      # active box color
+    "inactive": "#5a6cf0",    # inactive box color
+}
+
+def _install_theme(root):
+    """Configure a shared ttk.Style; safe to call once per app root."""
+    from tkinter import ttk
+    style = ttk.Style(root)
+    try:
+        style.theme_use("clam")
+    except Exception:
+        pass
+    root.configure(bg=BG)
+    style.configure("TFrame", background=BG)
+    style.configure("TLabel", background=BG, foreground="#1a1a2e")
+    style.configure("Sub.TLabel", background=BG, foreground="#7a7a88")
+    style.configure("Title.TLabel", background=BG, foreground="#1a1a2e",
+                    font=("TkDefaultFont", 14, "bold"))
+    style.configure("TButton", padding=(12, 6), relief="flat",
+                    background="#ffffff", foreground="#1a1a2e")
+    style.map("TButton", background=[("active", "#f0f0f8")])
+    style.configure("Primary.TButton", padding=(14, 6), relief="flat",
+                    background=ACCENT, foreground="#ffffff",
+                    font=("TkDefaultFont", 11, "bold"))
+    style.map("Primary.TButton", background=[("active", "#4a5ce0")])
+    style.configure("TEntry", padding=4)
+    return style
+
+def crop_to_round_photo(crop, cell=64, radius=8):
+    """BGR crop -> letterboxed cell x cell rounded-corner Tk PhotoImage."""
+    import cv2
+    from PIL import Image, ImageDraw, ImageTk
+    base = np.full((cell, cell, 3), 245, np.uint8)  # near-bg fill
+    h, w = crop.shape[:2]
+    if h > 0 and w > 0:
+        s = min(cell / w, cell / h)
+        nw, nh = max(1, int(w * s)), max(1, int(h * s))
+        resized = cv2.resize(crop, (nw, nh), interpolation=cv2.INTER_AREA)
+        y0, x0 = (cell - nh) // 2, (cell - nw) // 2
+        base[y0:y0 + nh, x0:x0 + nw] = resized
+    rgb = cv2.cvtColor(base, cv2.COLOR_BGR2RGB)
+    img = Image.fromarray(rgb).convert("RGBA")
+    try:
+        mask = Image.new("L", (cell, cell), 0)
+        ImageDraw.Draw(mask).rounded_rectangle(
+            [0, 0, cell - 1, cell - 1], radius=radius, fill=255)
+        img.putalpha(mask)
+    except Exception:
+        pass  # degrade to square
+    return ImageTk.PhotoImage(img)
+
+
 WINDOW = "Photo Scan Splitter"
 HANDLE_R = 12  # full-coord radius for corner-handle hit test (scaled at use)
 BANNER_H = 26  # status banner height in px, drawn above the image
+
 
 
 class Editor:

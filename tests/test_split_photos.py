@@ -248,3 +248,16 @@ def test_resize_respects_rotation_anchor():
     ang = math.radians(box.angle)
     anchor_world_y = box.center[1] - (box.size[0] / 2) * math.sin(ang)
     assert abs(anchor_world_y - 60) < 1e-6
+
+
+def test_crop_to_round_photo_creates_photoimage():
+    # tkinter needs a root to create PhotoImage without TclError
+    import tkinter as tk
+    root = tk.Tk()
+    crop = np.zeros((100, 100, 3), dtype=np.uint8)
+    img = sp.crop_to_round_photo(crop, cell=64, radius=8)
+    assert img is not None
+    assert img.width() == 64
+    assert img.height() == 64
+    root.destroy()
+
