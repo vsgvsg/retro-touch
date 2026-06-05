@@ -262,3 +262,13 @@ def test_crop_to_round_photo_creates_photoimage():
     assert img.height() == 64
     root.destroy()
 
+
+def test_orientation_name():
+    assert sp.orientation_name(0) == "Top"
+    assert sp.orientation_name(90) == "Right"
+    assert sp.orientation_name(180) == "Bottom"
+    assert sp.orientation_name(270) == "Left"
+    assert sp.orientation_name(360) == "Top"
+    assert sp.orientation_name(450) == "Right"
+    assert sp.orientation_name(45) == "45°"
+
