@@ -510,8 +510,12 @@ class Editor:
 
     # ---- coordinate helpers ----
     def _full(self, x, y):
-        # the status banner shifts the image down by BANNER_H px on screen
-        return disp_to_full((x, y - BANNER_H), self.scale)
+        # We don't have the BANNER_H status banner offset on the canvas image anymore!
+        return disp_to_full((x, y), self.scale)
+
+    def _full_tk(self, event):
+        """Translate tk.Label local event coords to full scan coords."""
+        return event.x / self.scale, event.y / self.scale
 
     def _active_box(self):
         if 0 <= self.active < len(self.boxes):
@@ -519,36 +523,36 @@ class Editor:
         return None
 
     # ---- mouse ----
-    def on_mouse(self, event, x, y, flags, param):
-        fx, fy = self._full(x, y)
-        if event == cv2.EVENT_LBUTTONDOWN:
-            self._dirty = True
-            # 1) edge/corner handle of active box? (resize)
-            b = self._active_box()
-            if b is not None:
-                handle = grab_handle((fx, fy), b, HANDLE_R / self.scale)
-                if handle is not None:
-                    self.drag = ("resize", handle)
-                    self.drag_start = (fx, fy)
-                    return
-            # 2) click inside an existing box -> select + move
-            for i, bx in enumerate(self.boxes):
-                if point_in_box((fx, fy), bx):
-                    self.active = i
-                    self.drag = "move"
-                    self.drag_start = (fx, fy)
-                    return
-            # 3) empty area -> start new box
-            self.drag = "new"
-            self.drag_start = (fx, fy)
-        elif event == cv2.EVENT_MOUSEMOVE and self.drag:
-            self._handle_drag(fx, fy)
-            self._dirty = True
-        elif event == cv2.EVENT_LBUTTONUP and self.drag:
-            self._finish_drag(fx, fy)
-            self._dirty = True
+    def on_mouse_down(self, event):
+        fx, fy = self._full_tk(event)
+        self._dirty = True
+        
+        # 1) Edge or corner handle of active box?
+        b = self._active_box()
+        if b is not None:
+            handle = grab_handle((fx, fy), b, HANDLE_R / self.scale)
+            if handle is not None:
+                self.drag = ("resize", handle)
+                self.drag_start = (fx, fy)
+                return
+        
+        # 2) Click inside an existing box -> select + move
+        for i, bx in enumerate(self.boxes):
+            if point_in_box((fx, fy), bx):
+                self.active = i
+                self.drag = "move"
+                self.drag_start = (fx, fy)
+                self._show()  # refresh cards to highlight selection
+                return
+        
+        # 3) Empty area -> start new box
+        self.drag = "new"
+        self.drag_start = (fx, fy)
 
-    def _handle_drag(self, fx, fy):
+    def on_mouse_drag(self, event):
+        if not self.drag:
+            return
+        fx, fy = self._full_tk(event)
         b = self._active_box()
         if self.drag == "move" and b is not None:
             dx = fx - self.drag_start[0]
@@ -558,8 +562,13 @@ class Editor:
             self.drag_start = (fx, fy)
         elif isinstance(self.drag, tuple) and self.drag[0] == "resize" and b is not None:
             resize_box(b, self.drag[1], (fx, fy))
+        self._dirty = True
+        self.root.after_idle(self._draw_overlay)
 
-    def _finish_drag(self, fx, fy):
+    def on_mouse_up(self, event):
+        if not self.drag:
+            return
+        fx, fy = self._full_tk(event)
         if self.drag == "new":
             x0, y0 = self.drag_start
             w = abs(fx - x0)
@@ -571,23 +580,48 @@ class Editor:
                 self.active = len(self.boxes) - 1
         self.drag = None
         self.drag_start = None
+        self._dirty = True
+        self._show()  # rebuilds sidebar cards with new thumbnails
 
     def _renumber(self):
         for i, b in enumerate(self.boxes, 1):
             b.id = i
 
-    # Arrow keycodes vary by OS/backend; cover the common ones plus an
-    # ASCII fallback (h/j/k/l) that works everywhere.
-    ARROW_LEFT = (81, 0x250000, 63234)
-    ARROW_UP = (82, 0x260000, 63232)
-    ARROW_RIGHT = (83, 0x270000, 63235)
-    ARROW_DOWN = (84, 0x280000, 63233)
+    def _cycle_active(self):
+        if self.boxes:
+            self.active = (self.active + 1) % len(self.boxes)
+            self._dirty = True
+            self._show()
 
-    def _move_active(self, dx: float, dy: float):
+    def _move_active_kbd(self, dx, dy):
         b = self._active_box()
         if b is not None:
             b.center[0] += dx
             b.center[1] += dy
+            self._dirty = True
+            self._show()
+
+    def _rotate_active(self, delta_deg):
+        b = self._active_box()
+        if b is not None:
+            b.orientation = (b.orientation + delta_deg) % 360
+            self._dirty = True
+            self._show()
+
+    def _nudge_active(self, delta):
+        b = self._active_box()
+        if b is not None:
+            self._nudge_angle(b, delta)
+            self._dirty = True
+            self._show()
+
+    def _delete_active(self):
+        if 0 <= self.active < len(self.boxes):
+            del self.boxes[self.active]
+            self._renumber()
+            self.active = min(self.active, len(self.boxes) - 1)
+            self._dirty = True
+            self._show()
 
     # ---- keyboard ----
     def on_key(self, key):
