@@ -623,6 +623,98 @@ class Editor:
             self._dirty = True
             self._show()
 
+    def _sync_scrollbar(self):
+        content = self.rows_frame.winfo_reqheight()
+        visible = self.rows_canvas.winfo_height()
+        if content > visible:
+            if not self._vbar.winfo_ismapped():
+                self._vbar.pack(side="right", fill="y", before=self.rows_canvas)
+        else:
+            if self._vbar.winfo_ismapped():
+                self._vbar.pack_forget()
+            self.rows_canvas.yview_moveto(0)
+
+    def _build_sidebar_cards(self):
+        for child in self.rows_frame.winfo_children():
+            child.destroy()
+        self._cells = []
+        
+        for idx, box in enumerate(self.boxes):
+            is_active = (idx == self.active)
+            bg_color = "#f0f0f8" if is_active else BG
+            border_color = ACCENT if is_active else CARD_BORDER
+            
+            # Card Outer frame
+            card = self.ttk.Frame(self.rows_frame, padding=8)
+            card.pack(fill="x", padx=6, pady=4)
+            
+            # Rounded thumbnail
+            try:
+                crop = crop_box(self.image, box)
+            except ValueError:
+                crop = np.full((64, 64, 3), 200, dtype=np.uint8)
+            
+            thumb = crop_to_round_photo(crop, cell=64, radius=8)
+            self._cells.append(thumb) # keep reference alive
+            
+            # Card Layout Grid
+            lbl_thumb = self.tk.Label(card, image=thumb, bg=bg_color)
+            lbl_thumb.grid(row=0, column=0, rowspan=2, padx=(0, 8))
+            
+            # Click card selection bind
+            lbl_thumb.bind("<Button-1>", lambda e, i=idx: self._select_card(i))
+            
+            badge_color = STATE_COLORS["active"] if is_active else STATE_COLORS["inactive"]
+            lbl_badge = self.tk.Label(card, text=f" #{box.id} ", bg=badge_color, fg="#ffffff", font=("TkDefaultFont", 10, "bold"))
+            lbl_badge.grid(row=0, column=1, sticky="w")
+            lbl_badge.bind("<Button-1>", lambda e, i=idx: self._select_card(i))
+            
+            desc = f"{int(round(box.size[0]))}x{int(round(box.size[1]))} px\nAngle: {box.angle:.1f}° | Orient: {box.orientation}°"
+            lbl_desc = self.ttk.Label(card, text=desc, font=("TkDefaultFont", 9))
+            lbl_desc.grid(row=1, column=1, sticky="w", pady=(2, 0))
+            lbl_desc.bind("<Button-1>", lambda e, i=idx: self._select_card(i))
+            
+            # Card Action Buttons
+            btn_frame = self.ttk.Frame(card)
+            btn_frame.grid(row=2, column=0, columnspan=2, pady=(6, 0), sticky="e")
+            
+            btn_rot = self.ttk.Button(btn_frame, text="↺ Rotate", command=lambda i=idx: self._rotate_card(i))
+            btn_rot.pack(side="left", padx=2)
+            
+            btn_del = self.ttk.Button(btn_frame, text="Delete", command=lambda i=idx: self._delete_card(i))
+            btn_del.pack(side="left", padx=2)
+            
+            # Background visual overrides
+            card.configure(style="Card.TFrame")
+            # Let's bind main frame clicks
+            card.bind("<Button-1>", lambda e, i=idx: self._select_card(i))
+
+    def _select_card(self, idx):
+        self.active = idx
+        self._dirty = True
+        self._show()
+
+    def _rotate_card(self, idx):
+        self.boxes[idx].orientation = (self.boxes[idx].orientation - 90) % 360
+        self._dirty = True
+        self._show()
+
+    def _delete_card(self, idx):
+        del self.boxes[idx]
+        self._renumber()
+        self.active = min(idx, len(self.boxes) - 1)
+        self._dirty = True
+        self._show()
+
+    def _scroll_active_into_view(self):
+        if not self.boxes or self.active < 0:
+            return
+        total = len(self.boxes)
+        # Estimate vertical position faction
+        frac = self.active / total
+        self.rows_canvas.yview_moveto(max(0.0, frac - 0.2))
+
+
     # ---- keyboard ----
     def on_key(self, key):
         """key is a full waitKeyEx code (not masked), or -1 for no key."""
