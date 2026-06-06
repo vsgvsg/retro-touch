@@ -45,17 +45,22 @@ model pack (~300 MB) to `~/.insightface`.
 
 ## 1. Splitting scans — `split_photos.py`
 
-Put flatbed scans (each containing one or more photos) in `images/`, then:
+Put flatbed scans (each containing one or more photos) in `images/` (subdirectories are scanned recursively), then:
 
 ```bash
-python3 split_photos.py
+python3 split_photos.py [images_dir] [--out OUT_DIR]
 ```
 
-It auto-detects the photo regions, opens an OpenCV window for you to adjust the
+Usage and arguments can be shown via:
+```bash
+python3 split_photos.py --help
+```
+
+It auto-detects the photo regions, opens a Tkinter/ttk window for you to adjust the
 boxes (move, resize, rotate, set orientation), and crops each photo into
-`extracted/`. Detection is best-effort — touching or full-bleed photos may need
+the output directory (default: `extracted/`). Detection is best-effort — touching or full-bleed photos may need
 manual fixing in the editor. Per-scan box geometry is saved alongside each scan
-as `images/<scan>.photos.json` and reloaded on restart, so your manual edits are
+as `<scan>.photos.json` (inside the scanned directory structure) and reloaded on restart, so your manual edits are
 never lost.
 
 Controls and gotchas are documented in `CLAUDE.md`. The editor needs a human at
