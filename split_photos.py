@@ -913,7 +913,7 @@ class SplitterApp:
 def list_scans(images_dir: str) -> list[str]:
     files = []
     for ext in ("*.jpg", "*.jpeg", "*.png", "*.tif", "*.tiff"):
-        files.extend(glob.glob(os.path.join(images_dir, ext)))
+        files.extend(glob.glob(os.path.join(images_dir, "**", ext), recursive=True))
     return sorted(files)
 
 
