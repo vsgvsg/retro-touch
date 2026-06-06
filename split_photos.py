@@ -918,9 +918,28 @@ def list_scans(images_dir: str) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
+    import argparse
     import tkinter as tk
-    images_dir = argv[1] if len(argv) > 1 else "images"
-    out_dir = "extracted"
+
+    p = argparse.ArgumentParser(
+        description="Photo Scan Splitter — detect, adjust, and crop photos from scanner images."
+    )
+    p.add_argument(
+        "images_dir",
+        nargs="?",
+        default="images",
+        help="directory containing scan images to process (default: 'images')"
+    )
+    p.add_argument(
+        "--out",
+        default="extracted",
+        help="output directory for cropped photos (default: 'extracted')"
+    )
+
+    args = p.parse_args(argv[1:])
+    images_dir = args.images_dir
+    out_dir = args.out
+
     if not os.path.isdir(images_dir):
         print(f"No such images directory: {images_dir}")
         return 1
@@ -929,9 +948,8 @@ def main(argv: list[str]) -> int:
         print(f"No scans found in {images_dir}")
         return 1
 
-    print("Controls (also in the GUI's '? Shortcuts' button):")
-    for keys, desc in SHORTCUTS:
-        print(f"  {keys:<22} {desc}")
+    p.print_help()
+    print()
 
     try:
         app = SplitterApp(scans, out_dir)
