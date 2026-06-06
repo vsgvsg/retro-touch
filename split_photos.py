@@ -86,8 +86,25 @@ def detect_photos(image: np.ndarray, min_area_frac: float = 0.01) -> list[Box]:
     split imperfectly. The human refines results in the editor.
     """
     h, w = image.shape[:2]
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    blur = cv2.medianBlur(gray, 9)
+
+    # Downscale extremely large scans to speed up medianBlur and morphology.
+    # A max dimension of 4000px preserves details for photo boundary detection
+    # while running morphology up to 15x faster than at 143MP.
+    max_dim = 4000.0
+    scale = min(max_dim / max(h, w), 1.0)
+    if scale < 1.0:
+        target_w = int(round(w * scale))
+        target_h = int(round(h * scale))
+        small = cv2.resize(image, (target_w, target_h), interpolation=cv2.INTER_AREA)
+    else:
+        small = image
+        target_w, target_h = w, h
+
+    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+    
+    # Scale median blur kernel size with the downscale factor
+    blur_k = max(3, int(round(9 * scale)) | 1)
+    blur = cv2.medianBlur(gray, blur_k)
 
     bg = _estimate_background(blur)
     # Foreground = pixels meaningfully darker than the bed. Margin avoids
@@ -95,7 +112,7 @@ def detect_photos(image: np.ndarray, min_area_frac: float = 0.01) -> list[Box]:
     thresh = max(0.0, bg - 40)
     fg = (blur < thresh).astype(np.uint8) * 255
 
-    k = max(3, (min(h, w) // 80) | 1)  # odd kernel scaled to image
+    k = max(3, (min(target_h, target_w) // 80) | 1)  # odd kernel scaled to image
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
     # Open to drop speckle and snap thin bridges between adjacent photos.
     fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, kernel, iterations=2)
@@ -103,11 +120,11 @@ def detect_photos(image: np.ndarray, min_area_frac: float = 0.01) -> list[Box]:
     fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, kernel, iterations=1)
 
     n, labels, stats, _ = cv2.connectedComponentsWithStats(fg, 8)
-    min_area = min_area_frac * h * w
+    min_area = min_area_frac * target_h * target_w
     boxes: list[Box] = []
     for i in range(1, n):  # 0 is background
         area = stats[i, cv2.CC_STAT_AREA]
-        if area < min_area or area > 0.95 * h * w:
+        if area < min_area or area > 0.95 * target_h * target_w:
             continue
         mask = (labels == i).astype(np.uint8)
         cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -116,6 +133,13 @@ def detect_photos(image: np.ndarray, min_area_frac: float = 0.01) -> list[Box]:
         (cx, cy), (bw, bh), ang = cv2.minAreaRect(max(cnts, key=cv2.contourArea))
         if bw < 1 or bh < 1:
             continue
+
+        # Scale back up to full-resolution coordinates
+        cx /= scale
+        cy /= scale
+        bw /= scale
+        bh /= scale
+
         bw, bh, ang = normalize_rect(bw, bh, ang)
         # A minAreaRect over an irregular merged blob can exceed page bounds.
         # Clamp size so the box stays on-canvas and remains editable by hand.
@@ -140,10 +164,37 @@ def crop_box(image: np.ndarray, box: Box) -> np.ndarray:
         raise ValueError("box has non-positive size")
 
     h, w = image.shape[:2]
-    M = cv2.getRotationMatrix2D((cx, cy), box.angle, 1.0)
-    rotated = cv2.warpAffine(image, M, (w, h), flags=cv2.INTER_CUBIC,
+
+    # Calculate bounding box of the rotated box to crop a sub-image first.
+    # This avoids rotating the entire full-resolution scan in memory.
+    rect = ((cx, cy), (bw, bh), box.angle)
+    pts = cv2.boxPoints(rect)
+    x_min = int(math.floor(np.min(pts[:, 0])))
+    y_min = int(math.floor(np.min(pts[:, 1])))
+    x_max = int(math.ceil(np.max(pts[:, 0])))
+    y_max = int(math.ceil(np.max(pts[:, 1])))
+
+    # Add padding to avoid interpolation boundary artifacts
+    pad = 5
+    x_min = max(0, x_min - pad)
+    y_min = max(0, y_min - pad)
+    x_max = min(w, x_max + pad)
+    y_max = min(h, y_max + pad)
+
+    # Handle completely off-canvas boxes
+    if x_max <= x_min or y_max <= y_min:
+        return np.zeros((bh, bw, image.shape[2]), dtype=image.dtype)
+
+    sub_image = image[y_min:y_max, x_min:x_max]
+    sub_h, sub_w = sub_image.shape[:2]
+
+    local_cx = cx - x_min
+    local_cy = cy - y_min
+
+    M = cv2.getRotationMatrix2D((local_cx, local_cy), box.angle, 1.0)
+    rotated = cv2.warpAffine(sub_image, M, (sub_w, sub_h), flags=cv2.INTER_CUBIC,
                              borderMode=cv2.BORDER_REPLICATE)
-    crop = cv2.getRectSubPix(rotated, (bw, bh), (cx, cy))
+    crop = cv2.getRectSubPix(rotated, (bw, bh), (local_cx, local_cy))
 
     # orientation names which edge is the photo's real top (matching the UI
     # arrow). Rotate so that edge ends up at the top of the output.
@@ -682,7 +733,7 @@ class SplitterApp:
         self.boxes = boxes
         self.editor.set_scan(self.image, self.boxes)
         self._refresh_header()
-        self._refresh_sidebar()
+        self._refresh_sidebar(rebuild=True)
         # ensure the window owns keyboard focus so shortcuts work before any
         # button is clicked (clicks would otherwise be the first focus event)
         self.editor.canvas.focus_set()
@@ -693,33 +744,119 @@ class SplitterApp:
         self.sub_var.set(f"{len(self.boxes)} photos · {cropped} cropped")
         self.progress.configure(value=self.idx + 1)
 
-    def _refresh_sidebar(self):
-        for w in self.rows.winfo_children():
-            w.destroy()
-        self._row_thumbs = []  # keep PhotoImage refs alive (Tk GCs otherwise)
+    def _get_thumbnail(self, b, i):
+        try:
+            thumb = crop_to_round_photo(crop_box(self.image, b), cell=40, radius=6)
+        except ValueError:
+            thumb = crop_to_round_photo(np.full((10, 10, 3), 200, np.uint8), cell=40, radius=6)
+        self._row_thumbs[i] = thumb
+        return thumb
+
+    def _refresh_sidebar(self, rebuild=False, only_active=False):
+        if self.image is None:
+            return
+
+        num_boxes = len(self.boxes)
+
+        # Rebuild if requested, or if the widgets structure doesn't match the boxes
+        if (rebuild or 
+            not hasattr(self, "_sidebar_rows") or 
+            len(self._sidebar_rows) != num_boxes or 
+            not hasattr(self, "_row_thumbs") or
+            len(self._row_thumbs) != num_boxes):
+            
+            for w in self.rows.winfo_children():
+                w.destroy()
+            self._sidebar_rows = []
+            self._row_thumbs = [None] * num_boxes
+
+            for i, b in enumerate(self.boxes):
+                active = (i == self.editor.active)
+                color = state_color(box_state(b, self.image.shape[:2], active=active))
+                rowbg = ACCENT if active else BG
+
+                row = self.tk.Frame(self.rows, bg=rowbg)
+                row.pack(fill="x", pady=1)
+
+                dot = self.tk.Label(row, text="●", fg=color, bg=rowbg)
+                dot.pack(side="left", padx=(4, 4))
+
+                thumb = self._get_thumbnail(b, i)
+                tlbl = self.tk.Label(row, image=thumb, bg=rowbg)
+                tlbl.pack(side="left", padx=(0, 6))
+
+                txt = f"{i+1}   {int(b.size[0])}×{int(b.size[1])}"
+                lbl = self.tk.Label(row, text=txt, anchor="w",
+                                    fg="#ffffff" if active else "#1a1a2e", bg=rowbg)
+                lbl.pack(side="left", fill="x", expand=True)
+
+                for wdg in (row, dot, tlbl, lbl):
+                    wdg.bind("<Button-1>", lambda e, idx=i: self._select(idx))
+
+                self._sidebar_rows.append({
+                    "frame": row,
+                    "dot": dot,
+                    "thumb_label": tlbl,
+                    "text_label": lbl
+                })
+            
+            self._last_active = self.editor.active
+            active_box = self.editor.active_box()
+            self._last_active_geom = (
+                (active_box.center[0], active_box.center[1], active_box.size[0], active_box.size[1],
+                 active_box.angle, active_box.orientation, active_box.output)
+                if active_box else None
+            )
+            self._refresh_active_panel()
+            self._refresh_header()
+            return
+
+        # Fetch current active box info
+        new_active = self.editor.active
+        active_box = self.editor.active_box()
+        new_geom = (
+            (active_box.center[0], active_box.center[1], active_box.size[0], active_box.size[1],
+             active_box.angle, active_box.orientation, active_box.output)
+            if active_box else None
+        )
+        
+        old_active = getattr(self, "_last_active", -1)
+        old_geom = getattr(self, "_last_active_geom", None)
+        
+        self._last_active = new_active
+        self._last_active_geom = new_geom
+
+        # If only updating active box (geometry edit)
+        if only_active or (new_active == old_active and new_geom != old_geom):
+            if 0 <= new_active < num_boxes and active_box:
+                row_widgets = self._sidebar_rows[new_active]
+                
+                # Re-crop thumbnail for active box
+                thumb = self._get_thumbnail(active_box, new_active)
+                row_widgets["thumb_label"].configure(image=thumb)
+                
+                # Update label text
+                txt = f"{new_active+1}   {int(active_box.size[0])}×{int(active_box.size[1])}"
+                row_widgets["text_label"].configure(text=txt)
+                
+                # Update dot color
+                color = state_color(box_state(active_box, self.image.shape[:2], active=True))
+                row_widgets["dot"].configure(fg=color)
+        
+        # Always configure colors/highlights for all rows to reflect active selection
+        # (Very fast, no image cropping performed here)
         for i, b in enumerate(self.boxes):
-            active = (i == self.editor.active)
-            color = state_color(box_state(b, self.image.shape[:2], active=active))
+            active = (i == new_active)
             rowbg = ACCENT if active else BG
-            row = self.tk.Frame(self.rows, bg=rowbg)
-            row.pack(fill="x", pady=1)
-            dot = self.tk.Label(row, text="●", fg=color, bg=rowbg)
-            dot.pack(side="left", padx=(4, 4))
-            try:
-                thumb = crop_to_round_photo(crop_box(self.image, b), cell=40,
-                                            radius=6)
-            except ValueError:
-                thumb = crop_to_round_photo(
-                    np.full((10, 10, 3), 200, np.uint8), cell=40, radius=6)
-            self._row_thumbs.append(thumb)
-            tlbl = self.tk.Label(row, image=thumb, bg=rowbg)
-            tlbl.pack(side="left", padx=(0, 6))
-            txt = f"{i+1}   {int(b.size[0])}×{int(b.size[1])}"
-            lbl = self.tk.Label(row, text=txt, anchor="w",
-                                fg="#ffffff" if active else "#1a1a2e", bg=rowbg)
-            lbl.pack(side="left", fill="x", expand=True)
-            for wdg in (row, dot, tlbl, lbl):
-                wdg.bind("<Button-1>", lambda e, idx=i: self._select(idx))
+            fg_color = "#ffffff" if active else "#1a1a2e"
+            color = state_color(box_state(b, self.image.shape[:2], active=active))
+            
+            row_widgets = self._sidebar_rows[i]
+            row_widgets["frame"].configure(bg=rowbg)
+            row_widgets["dot"].configure(bg=rowbg, fg=color)
+            row_widgets["thumb_label"].configure(bg=rowbg)
+            row_widgets["text_label"].configure(bg=rowbg, fg=fg_color)
+
         self._refresh_active_panel()
         self._refresh_header()
 
@@ -759,7 +896,7 @@ class SplitterApp:
         b = self.editor.active_box()
         if b is not None:
             b.orientation = (b.orientation + delta) % 360
-            self.editor.redraw(); self._refresh_sidebar()
+            self.editor.redraw(); self._refresh_sidebar(only_active=True)
 
     def _delete(self):
         i = self.editor.active
@@ -767,13 +904,13 @@ class SplitterApp:
             del self.boxes[i]
             self.editor._renumber()
             self.editor.active = min(i, len(self.boxes) - 1)
-            self.editor.redraw(); self._refresh_sidebar()
+            self.editor.redraw(); self._refresh_sidebar(rebuild=True)
 
     # ---- actions ----
     def _redetect(self):
         self.boxes = detect_photos(self.image)
         self.editor.set_scan(self.image, self.boxes)
-        self._refresh_sidebar()
+        self._refresh_sidebar(rebuild=True)
 
     def _save(self):
         h, w = self.image.shape[:2]
@@ -792,7 +929,7 @@ class SplitterApp:
             b.output = name
             cv2.imwrite(os.path.join(self.out_dir, name), out)
         self._save()
-        self._refresh_sidebar()
+        self._refresh_sidebar(rebuild=True)
 
     def _next(self):
         self._save()
@@ -862,7 +999,7 @@ class SplitterApp:
         b = self.editor.active_box()
         if b is not None:
             nudge_box(b, dx, dy)
-            self.editor.redraw(); self._refresh_sidebar()
+            self.editor.redraw(); self._refresh_sidebar(only_active=True)
 
     # ---- shortcuts popover ----
     def _show_shortcuts(self):
