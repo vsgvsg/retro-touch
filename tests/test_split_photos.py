@@ -189,6 +189,24 @@ def test_load_metadata_missing_returns_none(tmp_path):
     assert sp.load_metadata(str(scan)) is None
 
 
+def test_list_scans_recursive(tmp_path):
+    images_dir = tmp_path / "images"
+    images_dir.mkdir()
+    sub_dir = images_dir / "nested"
+    sub_dir.mkdir()
+
+    # Create image files
+    img1 = images_dir / "photo1.jpg"
+    img1.write_bytes(b"fake1")
+    img2 = sub_dir / "photo2.png"
+    img2.write_bytes(b"fake2")
+
+    scans = sp.list_scans(str(images_dir))
+    assert len(scans) == 2
+    assert any(s.endswith("photo1.jpg") for s in scans)
+    assert any(s.endswith("photo2.png") for s in scans)
+
+
 # ---- Display / geometry helpers ----
 def test_display_full_roundtrip():
     assert sp.disp_to_full((100, 50), 0.5) == (200.0, 100.0)
