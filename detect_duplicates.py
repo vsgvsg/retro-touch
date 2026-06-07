@@ -112,4 +112,39 @@ def resolve_duplicates(duplicate_groups: list[list[str]], file_meta: dict[str, d
             
     return moved_files
 
+import argparse
+
+def main():
+    parser = argparse.ArgumentParser(description="Detect and clean up duplicate images.")
+    parser.add_argument("--dir", default="extracted", help="Directory containing images to process (default: 'extracted')")
+    parser.add_argument("--threshold", type=int, default=2, help="Hamming distance threshold for duplicates (default: 2)")
+    parser.add_argument("--dry-run", action="store_true", help="Log duplicate files without moving them")
+    
+    args = parser.parse_args()
+    
+    if not os.path.exists(args.dir):
+        print(f"Directory '{args.dir}' does not exist.")
+        return 1
+        
+    print(f"Scanning for duplicates in '{args.dir}' with threshold {args.threshold}...")
+    groups, file_meta = find_duplicate_groups(args.dir, threshold=args.threshold)
+    
+    if not groups:
+        print("No duplicates found.")
+        return 0
+        
+    print(f"Found {len(groups)} group(s) of duplicates:")
+    moved = resolve_duplicates(groups, file_meta, dry_run=args.dry_run)
+    
+    if args.dry_run:
+        print(f"[DRY RUN] Would have moved {len(moved)} duplicate file(s).")
+    else:
+        print(f"Successfully moved {len(moved)} duplicate file(s) to '{args.dir}/duplicates/'.")
+    return 0
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(main())
+
+
 
