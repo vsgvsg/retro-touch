@@ -2,8 +2,11 @@ import os
 import cv2
 import numpy as np
 
-def compute_dhash(image_path: str, hash_size: int = 8) -> int | None:
-    img = cv2.imread(image_path)
+def compute_dhash(image_or_path, hash_size: int = 8) -> int | None:
+    if isinstance(image_or_path, (str, bytes, os.PathLike)):
+        img = cv2.imread(os.fspath(image_or_path))
+    else:
+        img = image_or_path
     if img is None:
         return None
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -46,11 +49,11 @@ def find_duplicate_groups(images_dir: str, threshold: int = 2) -> tuple[list[lis
     file_meta = {}
     
     for path in img_paths:
-        h = compute_dhash(path)
-        if h is None:
-            continue
         img = cv2.imread(path)
         if img is None:
+            continue
+        h = compute_dhash(img)
+        if h is None:
             continue
         h_dim, w_dim = img.shape[:2]
         hashes[path] = h
@@ -80,6 +83,9 @@ import shutil
 
 def resolve_duplicates(duplicate_groups: list[list[str]], file_meta: dict[str, dict], dry_run: bool = False) -> list[tuple[str, str]]:
     moved_files = []
+    # Track planned destinations to handle collisions during dry runs or multi-file moves
+    planned_destinations = set()
+    
     for grp in duplicate_groups:
         # Sort group by: resolution desc, size desc, filename asc
         grp_sorted = sorted(grp, key=lambda p: (
@@ -95,18 +101,29 @@ def resolve_duplicates(duplicate_groups: list[list[str]], file_meta: dict[str, d
         
         for dup in duplicates:
             dest_dir = os.path.join(os.path.dirname(dup), "duplicates")
-            dest_path = os.path.join(dest_dir, os.path.basename(dup))
+            base, ext = os.path.splitext(os.path.basename(dup))
+            
+            counter = 1
+            dest_path = os.path.join(dest_dir, f"{base}{ext}")
+            while os.path.exists(dest_path) or dest_path in planned_destinations:
+                dest_path = os.path.join(dest_dir, f"{base}_{counter}{ext}")
+                counter += 1
+            
+            planned_destinations.add(dest_path)
             print(f"  Duplicate to move: {os.path.basename(dup)} ({file_meta[dup]['width']}x{file_meta[dup]['height']}, {file_meta[dup]['size']} bytes) -> {dest_path}")
             
             # Check sidecar
             stem, _ = os.path.splitext(dup)
             sidecar = stem + ".faces.json"
             
+            dest_stem, _ = os.path.splitext(dest_path)
+            dest_sidecar = dest_stem + ".faces.json"
+            
             if not dry_run:
                 os.makedirs(dest_dir, exist_ok=True)
                 shutil.move(dup, dest_path)
                 if os.path.exists(sidecar):
-                    shutil.move(sidecar, os.path.join(dest_dir, os.path.basename(sidecar)))
+                    shutil.move(sidecar, dest_sidecar)
             
             moved_files.append((dup, dest_path))
             
