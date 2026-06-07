@@ -95,4 +95,25 @@ def test_resolve_duplicates(tmp_path):
     assert os.path.exists(os.path.join(tmp_path, "duplicates", "img2.jpg"))
     assert os.path.exists(os.path.join(tmp_path, "duplicates", "img2.faces.json"))
 
+def test_cli_dry_run(tmp_path):
+    import cv2
+    img1_path = os.path.join(tmp_path, "img1.jpg")
+    img2_path = os.path.join(tmp_path, "img2.jpg")
+    
+    img1 = np.ones((100, 100, 3), dtype=np.uint8) * 128
+    cv2.imwrite(img1_path, img1)
+    cv2.imwrite(img2_path, img1) # identical copy
+    
+    # Run script in dry-run mode
+    cmd = [os.path.abspath("/Users/vsg/.venv/bin/python"), os.path.abspath("detect_duplicates.py"), "--dir", str(tmp_path), "--dry-run"]
+    res = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    
+    assert "Keeping primary" in res.stdout
+    assert "Duplicate to move" in res.stdout
+    assert os.path.exists(img1_path)
+    assert os.path.exists(img2_path) # should not be moved in dry-run
+
+import subprocess
+
+
 
