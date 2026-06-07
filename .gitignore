@@ -1,0 +1,13 @@
+# Source scans (input data — kept local, not versioned)
+images/
+
+# Generated crops
+extracted/
+
+# Generated per-scan metadata sidecars
+*.photos.json
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
