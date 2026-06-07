@@ -20,6 +20,63 @@ them → `restore_photos.py` to enhance the photos with identity-grounded faces.
 The four tools never import each other — they communicate only through the JSON
 artifacts under `extracted/`.
 
+## Process Workflow
+
+```mermaid
+flowchart TD
+    classDef tool fill:#5a6cf0,stroke:#ececf2,stroke-width:2px,color:#fff;
+    classDef process fill:#f0f0f8,stroke:#5a6cf0,stroke-width:1px,color:#1a1a2e;
+    classDef storage fill:#fafaff,stroke:#9a9aa8,stroke-width:1px,stroke-dasharray: 5 5,color:#7a7a88;
+
+    subgraph Input ["Source Scan"]
+        Scan["Flatbed Scans (images/)"]
+    end
+
+    subgraph Step1 ["1. Crop & Deskew"]
+        Split["split_photos.py"]:::tool
+        Sidecar1["scan.photos.json"]:::storage
+        Crops["Cropped Images (extracted/)"]
+        
+        Scan --> Split
+        Split -.-> |Saves geometry| Sidecar1
+        Split --> |Outputs crops| Crops
+    end
+
+    subgraph Step2 ["2. Duplicate Resolution"]
+        Dupes["detect_duplicates.py"]:::tool
+        DupFolder["Duplicates Folder (extracted/duplicates/)"]
+        
+        Crops --> Dupes
+        Dupes --> |Moves lower-res/sizes| DupFolder
+    end
+
+    subgraph Step3 ["3. Face Metadata Pipeline"]
+        Face["face_pipeline.py"]:::tool
+        Embed["faces.npy / faces_index.json"]:::storage
+        Sidecar2["image.faces.json"]:::storage
+        Labels["labels.json"]:::storage
+        
+        Dupes --> |Kept primaries| Face
+        Face --> |detect| Embed
+        Face --> |cluster (HDBSCAN)| Sidecar2
+        Face --> |label (GUI)| Labels
+        Face --> |ages (GUI)| Sidecar2
+    end
+
+    subgraph Step4 ["4. Grounded AI Restoration"]
+        Restore["restore_photos.py"]:::tool
+        Replicate["Replicate API (GFP-GAN / Instant-ID)"]
+        Output["Restored Images (extracted/restored/)"]
+        Provenance["image.restore.json"]:::storage
+        
+        Face --> |Ages & Centroids| Restore
+        Restore --> |Blurry/Small Faces| Replicate
+        Replicate --> Restore
+        Restore --> |Restored & Composited| Output
+        Restore -.-> |Saves history| Provenance
+    end
+```
+
 ## Requirements
 
 - Python 3.9+ (the face GUI needs a working Tk — see the note below)
