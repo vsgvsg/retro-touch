@@ -926,6 +926,8 @@ class LabelerApp:
     def _source(self, image_name):
         import cv2
         if image_name not in self._img_cache:
+            if len(self._img_cache) >= 50:
+                self._img_cache.pop(next(iter(self._img_cache)))
             self._img_cache[image_name] = cv2.imread(
                 os.path.join(self.images_dir, image_name))
         return self._img_cache[image_name]
@@ -1210,6 +1212,8 @@ class AgeLabelerApp:
     def _source(self, image_name):
         import cv2
         if image_name not in self._img_cache:
+            if len(self._img_cache) >= 50:
+                self._img_cache.pop(next(iter(self._img_cache)))
             self._img_cache[image_name] = cv2.imread(
                 os.path.join(self.images_dir, image_name))
         return self._img_cache[image_name]
@@ -1465,6 +1469,8 @@ class PhotoReviewApp:
     def _source(self, image_name):
         import cv2
         if image_name not in self._img_cache:
+            if len(self._img_cache) >= 50:
+                self._img_cache.pop(next(iter(self._img_cache)))
             self._img_cache[image_name] = cv2.imread(
                 os.path.join(self.images_dir, image_name))
         return self._img_cache[image_name]

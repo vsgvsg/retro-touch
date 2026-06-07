@@ -115,5 +115,49 @@ def test_cli_dry_run(tmp_path):
 
 import subprocess
 
+def test_resolve_duplicates_collision(tmp_path):
+    from detect_duplicates import resolve_duplicates
+    # Pre-create a duplicates directory with a file named img2.jpg
+    duplicates_dir = os.path.join(tmp_path, "duplicates")
+    os.makedirs(duplicates_dir, exist_ok=True)
+    existing_dup_path = os.path.join(duplicates_dir, "img2.jpg")
+    with open(existing_dup_path, "wb") as f:
+        f.write(b"already_exists")
+
+    # Set up source files to move
+    img1_path = os.path.join(tmp_path, "img1.jpg")
+    img2_path = os.path.join(tmp_path, "img2.jpg")
+    
+    with open(img1_path, "wb") as f:
+        f.write(b"img1_data_large_fake")
+    with open(img2_path, "wb") as f:
+        f.write(b"img2_data")
+        
+    # Create fake sidecar for img2
+    sidecar_path = os.path.join(tmp_path, "img2.faces.json")
+    with open(sidecar_path, "w") as f:
+        f.write('{"test": true}')
+        
+    groups = [[img1_path, img2_path]]
+    file_meta = {
+        img1_path: {"width": 100, "height": 100, "size": 20},
+        img2_path: {"width": 50, "height": 50, "size": 9}
+    }
+    
+    moved = resolve_duplicates(groups, file_meta, dry_run=False)
+    
+    # We expect img2 to be moved to duplicates/img2_1.jpg, and its sidecar to duplicates/img2_1.faces.json
+    assert len(moved) == 1
+    expected_dest = os.path.join(duplicates_dir, "img2_1.jpg")
+    expected_sidecar = os.path.join(duplicates_dir, "img2_1.faces.json")
+    assert moved[0] == (img2_path, expected_dest)
+    
+    assert os.path.exists(img1_path)
+    assert not os.path.exists(img2_path)
+    assert not os.path.exists(sidecar_path)
+    assert os.path.exists(existing_dup_path)
+    assert os.path.exists(expected_dest)
+    assert os.path.exists(expected_sidecar)
+
 
 
