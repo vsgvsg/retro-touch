@@ -1,6 +1,6 @@
-# Photo Scan Tools
+# RetroTouch
 
-Three command-line tools for digitizing, organizing, and restoring scanned
+Four command-line and interactive tools for digitizing, organizing, and restoring scanned
 photos:
 
 1. **`split_photos.py`** — split a flatbed scan that contains several photos into
@@ -8,15 +8,16 @@ photos:
 2. **`face_pipeline.py`** — detect faces in those crops, group them by person, and
    tag them, using [InsightFace](https://github.com/deepinsight/insightface)
    embeddings + HDBSCAN clustering.
-3. **`restore_photos.py`** — restore old/blurry photos, reconstructing faces
+3. **`detect_duplicates.py`** — detect and resolve duplicate photos in the extracted crops using perceptual hashing (dhash) and union-find grouping.
+4. **`restore_photos.py`** — restore old/blurry photos, reconstructing faces
    *grounded on a sharper photo of the same person at a similar age* (using the
    labels and ages produced by `face_pipeline.py`).
 
 Typical flow: scan a stack of photos → `split_photos.py` to get one image per
-photo in `extracted/` → `face_pipeline.py` to find, label, and age the people in
+photo in `extracted/` → `detect_duplicates.py` to clean up duplicate crops → `face_pipeline.py` to find, label, and age the people in
 them → `restore_photos.py` to enhance the photos with identity-grounded faces.
 
-The three tools never import each other — they communicate only through the JSON
+The four tools never import each other — they communicate only through the JSON
 artifacts under `extracted/`.
 
 ## Requirements
@@ -219,7 +220,22 @@ centroid, so a new photo's face may still score `unknown` at the default
 threshold — just type the name in review; that grows the cluster and strengthens
 future matches.
 
-## 3. Restoring old photos — `restore_photos.py`
+## 3. Detecting and resolving duplicates — `detect_duplicates.py`
+
+Identify and clean up duplicate images in your extracted photos:
+
+```bash
+python3 detect_duplicates.py [--dir DIR] [--threshold THRESHOLD] [--dry-run]
+```
+
+### How it works
+1. **Perceptual Hashing (dhash):** Computes a 64-bit dhash for every photo in the directory.
+2. **Union-Find Clustering:** Groups photos whose Hamming distance is within the `--threshold` (default: `2`).
+3. **Automated Resolution:** For each duplicate group, it keeps the highest quality photo (sorting by resolution desc, file size desc, filename asc) as the primary, and moves all other duplicates to a nested `duplicates/` folder.
+4. **Sidecar Preservation:** Automatically renames and moves matching `.faces.json` sidecar files along with the duplicate images, ensuring no metadata or manual tagging is lost.
+5. **Collision Resolution:** Safely appends incremental suffixes (e.g. `_1.jpg`) if the duplicate directory already contains a file with the same name.
+
+## 4. Restoring old photos — `restore_photos.py`
 
 Restores photos in `extracted/`, reconstructing degraded faces while anchoring
 them to the person's real identity. Instead of inventing a face from a generic
