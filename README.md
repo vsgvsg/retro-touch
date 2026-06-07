@@ -22,60 +22,87 @@ artifacts under `extracted/`.
 
 ## Process Workflow
 
+![Process Workflow](docs/workflow.svg)
+
+<details>
+<summary>Mermaid Source</summary>
+
 ```mermaid
+%%{init: {'theme': 'default', 'themeVariables': {'background': '#ffffff', 'canvasBackground': '#ffffff'}}}%%
 flowchart TD
     classDef tool fill:#5a6cf0,stroke:#ececf2,stroke-width:2px,color:#fff;
     classDef process fill:#f0f0f8,stroke:#5a6cf0,stroke-width:1px,color:#1a1a2e;
     classDef storage fill:#fafaff,stroke:#9a9aa8,stroke-width:1px,stroke-dasharray: 5 5,color:#7a7a88;
 
     subgraph Input ["Source Scan"]
-        Scan["Flatbed Scans (images/)"]
+        Scan["Flatbed Scans (images/)"]:::storage
     end
 
     subgraph Step1 ["1. Crop & Deskew"]
         Split["split_photos.py"]:::tool
         Sidecar1["scan.photos.json"]:::storage
-        Crops["Cropped Images (extracted/)"]
+        Crops["Cropped Images (extracted/)"]:::storage
         
         Scan --> Split
-        Split -.-> |Saves geometry| Sidecar1
-        Split --> |Outputs crops| Crops
+        Split -.-> |"Saves geometry"| Sidecar1
+        Split --> |"Outputs crops"| Crops
     end
 
     subgraph Step2 ["2. Duplicate Resolution"]
         Dupes["detect_duplicates.py"]:::tool
-        DupFolder["Duplicates Folder (extracted/duplicates/)"]
+        DupFolder["Duplicates Folder (extracted/duplicates/)"]:::storage
         
         Crops --> Dupes
-        Dupes --> |Moves lower-res/sizes| DupFolder
+        Dupes --> |"Moves duplicates"| DupFolder
     end
 
     subgraph Step3 ["3. Face Metadata Pipeline"]
-        Face["face_pipeline.py"]:::tool
+        Face["face_pipeline.py (detect / cluster / label / ages)"]:::tool
+        Match["face_pipeline.py match (GUI)"]:::tool
         Embed["faces.npy / faces_index.json"]:::storage
         Sidecar2["image.faces.json"]:::storage
         Labels["labels.json"]:::storage
+        MatchReport["match_report.json"]:::storage
         
-        Dupes --> |Kept primaries| Face
-        Face --> |detect| Embed
-        Face --> |cluster (HDBSCAN)| Sidecar2
-        Face --> |label (GUI)| Labels
-        Face --> |ages (GUI)| Sidecar2
+        Crops --> |"Kept primaries"| Face
+        Face --> |"detect"| Embed
+        Face --> |"cluster (HDBSCAN)"| Sidecar2
+        Face --> |"label (GUI)"| Labels
+        Face --> |"ages (GUI)"| Sidecar2
+        
+        Embed --> Match
+        Sidecar2 --> Match
+        Labels --> Match
+        Match --> |"scores"| MatchReport
+        Match -.-> |"User overrides & new personas"| Sidecar2
+        Match -.-> |"Updates named gallery"| Labels
     end
 
     subgraph Step4 ["4. Grounded AI Restoration"]
         Restore["restore_photos.py"]:::tool
-        Replicate["Replicate API (GFP-GAN / Instant-ID)"]
-        Output["Restored Images (extracted/restored/)"]
+        Replicate["Replicate API (GFP-GAN / Instant-ID)"]:::process
+        Output["Restored Images (extracted/restored/)"]:::storage
         Provenance["image.restore.json"]:::storage
         
-        Face --> |Ages & Centroids| Restore
-        Restore --> |Blurry/Small Faces| Replicate
+        Crops --> |"Target images"| Restore
+        Embed --> |"Reference embeddings"| Restore
+        Sidecar2 --> |"Ages"| Restore
+        Labels --> |"Centroids & Names"| Restore
+        
+        Restore --> |"Blurry/Small Faces"| Replicate
         Replicate --> Restore
-        Restore --> |Restored & Composited| Output
-        Restore -.-> |Saves history| Provenance
+        Restore --> |"Restored & Composited"| Output
+        Restore -.-> |"Saves history"| Provenance
     end
+
+    style Input fill:#ffffff,stroke:#9a9aa8,stroke-width:1px;
+    style Step1 fill:#ffffff,stroke:#9a9aa8,stroke-width:1px;
+    style Step2 fill:#ffffff,stroke:#9a9aa8,stroke-width:1px;
+    style Step3 fill:#ffffff,stroke:#9a9aa8,stroke-width:1px;
+    style Step4 fill:#ffffff,stroke:#9a9aa8,stroke-width:1px;
 ```
+</details>
+
 
 ## Requirements
 

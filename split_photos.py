@@ -446,6 +446,21 @@ def _install_theme(root):
                     font=("TkDefaultFont", 11, "bold"))
     style.map("Primary.TButton", background=[("active", "#4a5ce0")])
     style.configure("TEntry", padding=4)
+
+    # Set window icon
+    try:
+        import os
+        from PIL import Image, ImageTk
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        icon_path = os.path.join(script_dir, "docs", "icon.png")
+        if os.path.exists(icon_path):
+            img = Image.open(icon_path)
+            icon_img = ImageTk.PhotoImage(img)
+            root._icon_image = icon_img
+            root.iconphoto(False, icon_img)
+    except Exception:
+        pass
+
     return style
 
 

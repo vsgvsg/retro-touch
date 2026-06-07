@@ -1,17 +1,28 @@
-# Photo Scan Splitter
+# RetroTouch
 
-Three tools: `split_photos.py` detects, lets a human adjust (in a Tkinter/ttk
-GUI matching the face pipeline's look), and crops
-multiple photos out of flatbed scan images in `images/` into `extracted/`.
-`face_pipeline.py` then detects/clusters/tags faces in those `extracted/` crops.
-`restore_photos.py` restores old photos, reconstructing blurry faces grounded
-on a sharper reference of the same person at a similar age (uses the pipeline's
-labels + ages). The three are one-off tools; they never cross-import — the JSON
-artifacts under `extracted/` are the only interface between them.
+Four tools for digitizing, organizing, and restoring scanned photos:
+1. `split_photos.py` detects, lets a human adjust (in a Tkinter/ttk GUI), and crops multiple photos out of flatbed scan images in `images/` into `extracted/`.
+2. `detect_duplicates.py` detects and resolves duplicate photos in the extracted crops using perceptual hashing (dhash) and union-find grouping.
+3. `face_pipeline.py` detects, clusters, labels, and ages faces in those `extracted/` crops.
+4. `restore_photos.py` restores old/blurry photos, reconstructing faces grounded on a sharper photo of the same person at a similar age (using labels and ages from the face pipeline).
+
+The four are one-off tools; they never cross-import — the JSON and image artifacts under `extracted/` are the only interface between them.
 
 ## Commands
-- `.venv/bin/python split_photos.py` - launch the Tkinter editor (canvas + sidebar, ttk-themed like the face pipeline GUIs). Needs a human at the GUI; run via the venv (system Python's Tk can't open a window on this macOS). `python3 split_photos.py` works only where a GUI-capable Tk is available.
-- `.venv/bin/python -m pytest tests/ -q` - run all tests. Use the venv (Homebrew Python 3.13 + Tk 9.0): the GUI tests run there. The system `python3` (3.9) ships Tk 8.5, which SIGABRTs on `Tk()` and pops a macOS crash dialog — under it those tests are auto-skipped (gated on `TkVersion >= 8.6`), so `python3 -m pytest` still passes but doesn't exercise the GUI. NEVER detect display by calling `Tk()` (even in a subprocess — the popup still fires); read `tkinter.TkVersion` instead (opens no window).
+- `.venv/bin/python split_photos.py` - launch the Tkinter editor (canvas + sidebar, ttk-themed like the face pipeline GUIs). Needs a human at the GUI; run via the venv (system Python's Tk can't open a window on this macOS).
+- `.venv/bin/python detect_duplicates.py [--dir DIR] [--threshold THRESHOLD] [--dry-run]` - run the duplicate detection and cleanup tool.
+- `.venv/bin/python face_pipeline.py [detect|cluster|label|ages|match|report|merge]` - run the face metadata detection, clustering, labeling, or matching commands.
+- `.venv/bin/python restore_photos.py [face|photo] <photo>` - run identity-grounded photo restoration.
+- `.venv/bin/python -m pytest tests/ -q` - run all tests. Use the venv (Homebrew Python 3.13 + Tk 9.0): the GUI tests run there. The system `python3` (3.9) ships Tk 8.5, which SIGABRTs on `Tk()` and pops a macOS crash dialog — under it those tests are auto-skipped (gated on `TkVersion >= 8.6`), so `python3 -m pytest` still passes but doesn't exercise the GUI. NEVER detect display by calling `Tk()` (even in a subprocess); read `tkinter.TkVersion` instead (opens no window).
+
+## Duplicate Photo Detection (detect_duplicates.py)
+- Computes a 64-bit dhash for every photo in the directory.
+- Groups duplicate images whose Hamming distance is within `--threshold` (default: 2) using Union-Find.
+- Primary resolution: keeps the highest quality photo (sorting by resolution desc, file size desc, filename asc) as the primary, and moves all other duplicates to a nested `duplicates/` folder.
+- Preserves manual tagging: automatically moves matching `.faces.json` sidecar files along with the duplicate images.
+- Implements collision resolution (safely appends incremental suffixes like `_1.jpg` if name already exists in target directory).
+- Pure helpers (`compute_dhash`, `UnionFind`, `find_duplicate_groups`, `resolve_duplicates`) are TDD-tested.
+
 
 ## Photo Scan Splitter GUI (split_photos.py)
 - ttk app (clam theme, shared look with face_pipeline): header (filename + "N photos · M cropped" + clickable progress bar to jump scans), a `CanvasEditor` (tk.Canvas: scan as a background PhotoImage, each box drawn as native canvas items — polygon + corner handles + orientation arrow), and a right sidebar (PHOTOS list w/ thumbnail + state-colored dot per box, click a row to select; ACTIVE BOX panel: top-edge word via `orientation_label` (top/right/bottom/left) + inline rounded-crop preview + `↻ Rotate` and `Delete` buttons — tilt is keyboard-only).
