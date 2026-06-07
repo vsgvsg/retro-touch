@@ -455,6 +455,65 @@ def previous_names(labels_map: dict) -> list[str]:
     return sorted({v for v in labels_map.values() if v})
 
 
+def find_duplicate_personas(labels_map: dict[str, str]) -> dict[str, list[str]]:
+    """Find names mapped to more than one cluster ID.
+
+    Returns a dict mapping name -> list of cluster IDs sorted,
+    where the list of cluster IDs has len > 1.
+    """
+    by_name: dict[str, list[str]] = {}
+    for cid, name in labels_map.items():
+        if name:
+            by_name.setdefault(name, []).append(cid)
+    return {name: sorted(cids) for name, cids in by_name.items() if len(cids) > 1}
+
+
+def merge_persona_clusters(images_dir: str, labels_map: dict[str, str]) -> tuple[dict[str, str], int]:
+    """Merge duplicate persona clusters in both labels_map and sidecar files.
+
+    For each name with multiple cluster IDs:
+      - Pick the first cluster ID as canonical.
+      - Re-assign all faces in other duplicate clusters to the canonical ID.
+      - Update labels_map to keep only the canonical ID.
+
+    Returns (updated_labels_map, number_of_faces_reassigned).
+    """
+    duplicates = find_duplicate_personas(labels_map)
+    if not duplicates:
+        return labels_map, 0
+
+    merge_map = {}
+    for name, cids in duplicates.items():
+        canonical = cids[0]
+        for dup in cids[1:]:
+            merge_map[dup] = canonical
+
+    new_labels_map = {cid: name for cid, name in labels_map.items() if cid not in merge_map}
+
+    faces_reassigned = 0
+    for path in glob.glob(os.path.join(images_dir, "*.faces.json")):
+        try:
+            with open(path) as f:
+                data = json.load(f)
+        except Exception:
+            continue
+        modified = False
+        for face in data.get("faces", []):
+            cur_cluster = face.get("cluster", "")
+            if cur_cluster in merge_map:
+                face["cluster"] = merge_map[cur_cluster]
+                modified = True
+                faces_reassigned += 1
+        if modified:
+            with open(path, "w") as f:
+                json.dump(data, f, indent=2)
+
+    return new_labels_map, faces_reassigned
+
+
+
+
+
 def age_prefill(face) -> str:
     """Age value as an editable string, '' when unset."""
     a = face.get("age")
@@ -860,6 +919,8 @@ class LabelerApp:
                                    style="Primary.TButton", command=self._next)
         self.next_btn.pack(side="right")
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.root.bind_all("q", self._on_q_key)
+
 
     # ---- image helpers ----
     def _source(self, image_name):
@@ -883,7 +944,7 @@ class LabelerApp:
                             borderwidth=0)
         if excluded:
             lbl.configure(text="excluded", compound="center",
-                          fg="#ffffff")
+                          fg="red")
         lbl.grid(row=row, column=col, padx=4, pady=4)
         if readable and not excluded:
             lbl.bind("<Button-1>", lambda e, f=face: self._preview_full(f))
@@ -951,9 +1012,9 @@ class LabelerApp:
     def _do_exclude(self, face):
         exclude_face(self.images_dir, face["image"], face["face_id"])
         self._excluded.add((face["image"], face["face_id"]))
-        self._show()
+        self._show(keep_scroll=True)
 
-    def _show(self):
+    def _show(self, keep_scroll=False):
         cid = self.cluster_ids[self.idx]
         faces = self.cluster_index[cid]
         self.cluster_var.set(f"Cluster {cid} · {len(faces)} faces")
@@ -961,15 +1022,52 @@ class LabelerApp:
             f"Person {self.idx + 1} of {len(self.cluster_ids)} · "
             f"⌘-click a crop to exclude")
         self.progress.configure(value=self.idx)
+
+        saved_y = 0.0
+        has_focus = False
+        cursor_pos = 0
+        has_selection = False
+        sel_start = 0
+        sel_end = 0
+
+        if keep_scroll:
+            saved_y = self.canvas.yview()[0]
+            # Save entry state: cursor position, selection, focus
+            has_focus = (self.root.focus_get() == self.entry)
+            try:
+                cursor_pos = self.entry.index(self.tk.INSERT)
+                has_selection = self.entry.select_present()
+                if has_selection:
+                    sel_start = self.entry.index(self.tk.SEL_FIRST)
+                    sel_end = self.entry.index(self.tk.SEL_LAST)
+            except (self.tk.TclError, AttributeError, ValueError):
+                has_selection = False
+
         for child in self.grid_frame.winfo_children():
             child.destroy()
         self._cells = []
         positions = grid_positions(len(faces), cols=3)
         for face, (r, c) in zip(faces, positions):
             self._make_crop_cell(face, r, c)
-        self.canvas.yview_moveto(0)
-        self.name_var.set(self.labels_map.get(cid, ""))
-        self.entry.focus_set()
+
+        if keep_scroll:
+            # Force layout updates so scroll region is recalculated
+            self.root.update_idletasks()
+            self.canvas.yview_moveto(saved_y)
+            # Restore entry state if it had focus or selection
+            if has_focus:
+                self.entry.focus_set()
+                try:
+                    self.entry.icursor(cursor_pos)
+                    if has_selection:
+                        self.entry.select_range(sel_start, sel_end)
+                except (self.tk.TclError, AttributeError, ValueError):
+                    pass
+        else:
+            self.canvas.yview_moveto(0)
+            self.name_var.set(self.labels_map.get(cid, ""))
+            self.entry.focus_set()
+
         self._refresh_names()
         self.next_btn.configure(
             text="Done" if self.idx == len(self.cluster_ids) - 1
@@ -1032,6 +1130,12 @@ class LabelerApp:
         self._close_preview()
         self._commit_current()
         self.root.destroy()
+
+    def _on_q_key(self, event):
+        if event.widget.winfo_class() in ("TEntry", "Entry"):
+            return
+        self._on_close()
+
 
     def run(self):
         self._show()
@@ -1100,6 +1204,8 @@ class AgeLabelerApp:
                                    style="Primary.TButton", command=self._next)
         self.next_btn.pack(side="right")
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.root.bind_all("q", self._on_q_key)
+
 
     def _source(self, image_name):
         import cv2
@@ -1224,6 +1330,12 @@ class AgeLabelerApp:
         self._commit_current()
         self.root.destroy()
 
+    def _on_q_key(self, event):
+        if event.widget.winfo_class() in ("TEntry", "Entry"):
+            return
+        self._on_close()
+
+
     def run(self):
         self._show()
         self.root.mainloop()
@@ -1245,6 +1357,28 @@ class PhotoReviewApp:
         self._img_cache = {}
         self._photo_img = None                 # keep PhotoImage ref alive
         self._entries = []                     # (face_id, StringVar) per row
+        self._focused_entry_var = None         # keep track of focused entry for suggestions
+
+        # Collect all existing labels from sidecars and labels.json once at startup
+        self.existing_labels = set()
+        labels_path = os.path.join(images_dir, "labels.json")
+        if os.path.exists(labels_path):
+            try:
+                with open(labels_path) as f:
+                    for v in json.load(f).values():
+                        if v:
+                            self.existing_labels.add(v)
+            except Exception:
+                pass
+        for path in glob.glob(os.path.join(images_dir, "*.faces.json")):
+            try:
+                with open(path) as f:
+                    for face in json.load(f).get("faces", []):
+                        lbl = face.get("label", "")
+                        if lbl:
+                            self.existing_labels.add(lbl)
+            except Exception:
+                pass
 
         # Fixed window size so it never resizes per photo. Photo is fit into a
         # bounded pane (PHOTO_W x PHOTO_H) rather than driving the geometry.
@@ -1296,6 +1430,10 @@ class PhotoReviewApp:
         right = ttk.Frame(body, width=300)
         right.pack(side="right", fill="y", padx=8)
         right.pack_propagate(False)
+
+        self.suggestions_frame = ttk.Frame(right)
+        self.suggestions_frame.pack(side="bottom", fill="x", pady=(10, 0), padx=4)
+
         self.rows_canvas = tk.Canvas(right, highlightthickness=0, bg=BG)
         self._vbar = self.ttk.Scrollbar(right, orient="vertical",
                                         command=self.rows_canvas.yview)
@@ -1321,6 +1459,8 @@ class PhotoReviewApp:
                 int(-1 * (e.delta / 120)), "units"))
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.root.bind_all("q", self._on_q_key)
+
 
     def _source(self, image_name):
         import cv2
@@ -1371,6 +1511,11 @@ class PhotoReviewApp:
     def _show(self):
         import cv2
         from PIL import Image, ImageTk
+
+        self._focused_entry_var = None
+        for child in self.suggestions_frame.winfo_children():
+            child.destroy()
+
         # Skip past any unreadable photos without recursing (a long run of
         # missing source images must not blow the stack).
         while self.idx < len(self.photos):
@@ -1442,8 +1587,15 @@ class PhotoReviewApp:
                                   width=2, font=("TkDefaultFont", 9, "bold"))
             badge.pack(side="left", padx=(0, 6))
             var = self.tk.StringVar(value=pre)
-            self.ttk.Entry(top, textvariable=var, width=20).pack(
-                side="left", fill="x", expand=True)
+            entry = self.ttk.Entry(top, textvariable=var, width=20)
+            entry.pack(side="left", fill="x", expand=True)
+
+            # Trace and focus bindings for autocomplete matches
+            var.trace_add("write", lambda *_, v=var: self._on_entry_change(v))
+            entry.bind("<FocusIn>", lambda e, v=var: self._on_entry_focus(v))
+
+            if n == 1:
+                first_entry = entry
 
             meta = self.tk.Frame(colf, bg="#ffffff")
             meta.pack(fill="x", pady=(4, 0))
@@ -1467,9 +1619,15 @@ class PhotoReviewApp:
         self.next_btn.configure(
             text="Done" if self.idx == len(self.photos) - 1 else "Next")
 
+        if first_entry:
+            first_entry.focus_set()
+
     def _commit_current(self):
         image = self.photos[self.idx]
         edits = {fid: var.get().strip() for fid, var in self._entries}
+        for name in edits.values():
+            if name:
+                self.existing_labels.add(name)
         self.labels_map = apply_photo_edits(
             self.images_dir, image, edits, self.labels_map, self.existing_ids)
         write_labels(self.images_dir, self.labels_map)
@@ -1494,6 +1652,60 @@ class PhotoReviewApp:
     def _on_close(self):
         self._commit_current()
         self.root.destroy()
+
+    def _on_q_key(self, event):
+        if event.widget.winfo_class() in ("TEntry", "Entry"):
+            return
+        self._on_close()
+
+
+    def _on_entry_focus(self, var):
+        self._focused_entry_var = var
+        self._refresh_suggestions()
+
+    def _on_entry_change(self, var):
+        self._focused_entry_var = var
+        self._refresh_suggestions()
+
+    def _get_all_names(self):
+        names = set(previous_names(self.labels_map))
+        for _, var in self._entries:
+            val = var.get().strip()
+            if val:
+                names.add(val)
+        for name, _ in self.best.values():
+            if name:
+                names.add(name)
+        return sorted(names)
+
+    def _refresh_suggestions(self):
+        for child in self.suggestions_frame.winfo_children():
+            child.destroy()
+        if not self._focused_entry_var:
+            return
+        typed = self._focused_entry_var.get().strip().lower()
+        names = self._get_all_names()
+        if typed:
+            matches = [n for n in names if typed in n.lower()]
+        else:
+            matches = names[:5]
+        if not matches:
+            return
+
+        lbl = self.ttk.Label(self.suggestions_frame, text="SUGGESTIONS:", style="Sub.TLabel")
+        lbl.pack(anchor="w", pady=(0, 2))
+
+        chips_container = self.ttk.Frame(self.suggestions_frame)
+        chips_container.pack(fill="x")
+
+        for nm in matches[:5]:
+            chip = self.tk.Label(chips_container, text=nm, bg="#ececfa",
+                                 fg="#4a4ad0", padx=10, pady=4, cursor="hand2",
+                                 anchor="w", font=("TkDefaultFont", 9))
+            chip.pack(fill="x", pady=1)
+            chip.bind("<Enter>", lambda e, c=chip: c.configure(bg="#e0e0f5"))
+            chip.bind("<Leave>", lambda e, c=chip: c.configure(bg="#ececfa"))
+            chip.bind("<Button-1>", lambda e, v=self._focused_entry_var, nm=nm: (v.set(nm), self._refresh_suggestions()))
 
     def run(self):
         self._show()
@@ -1521,7 +1733,9 @@ def run_label(images_dir: str) -> int:
     app = LabelerApp(images_dir, cluster_index, labels_map)
     app.run()
     print(f"Saved labels -> {path}")
+    run_merge_on_completion(images_dir)
     return 0
+
 
 
 def run_ages(images_dir: str) -> int:
@@ -1543,7 +1757,9 @@ def run_ages(images_dir: str) -> int:
             labels_map = json.load(f)
     AgeLabelerApp(images_dir, cluster_index, labels_map).run()
     print("Ages saved to sidecars.")
+    run_merge_on_completion(images_dir)
     return 0
+
 
 
 def run_match(images_dir: str, gallery: str, top: int = 3,
@@ -1604,6 +1820,7 @@ def run_match(images_dir: str, gallery: str, top: int = 3,
         app = PhotoReviewApp(images_dir, photos, best, labels_map, threshold)
         app.run()
         print("Review complete; labels saved.")
+        run_merge_on_completion(images_dir)
         return 0
 
     if apply:
@@ -1623,6 +1840,7 @@ def run_match(images_dir: str, gallery: str, top: int = 3,
             write_faces_json(path, tuple(data["image_size"]), data["model"],
                              data["faces"])
         print("Applied top-1 labels to sidecars.")
+        run_merge_on_completion(images_dir)
     return 0
 
 
@@ -1639,6 +1857,69 @@ def run_report(images_dir: str) -> int:
               f"{r['faces']:>6}{r['images']:>11}")
     print(f"\n{len(rows)} labeled person(s).")
     return 0
+
+
+def run_merge(images_dir: str) -> int:
+    """Consolidate duplicate persona clusters with the same name.
+
+    Scans labels.json, groups duplicate clusters, updates all matching face sidecar files
+    to use the canonical cluster ID, writes back the updated labels.json, and prints a report.
+    """
+    labels_path = os.path.join(images_dir, "labels.json")
+    if not os.path.exists(labels_path):
+        print(f"No labels.json found in {images_dir}. Nothing to merge.")
+        return 1
+    try:
+        with open(labels_path) as f:
+            labels_map = json.load(f)
+    except Exception as e:
+        print(f"Failed to read {labels_path}: {e}")
+        return 1
+
+    duplicates = find_duplicate_personas(labels_map)
+    if not duplicates:
+        print("No duplicate persona names found in labels.json.")
+        return 0
+
+    print("Found duplicate personas:")
+    for name, cids in duplicates.items():
+        print(f"  '{name}': {', '.join(cids)} -> canonical: {cids[0]}")
+
+    new_labels, count = merge_persona_clusters(images_dir, labels_map)
+
+    try:
+        write_labels(images_dir, new_labels)
+    except Exception as e:
+        print(f"Failed to write updated labels to {labels_path}: {e}")
+        return 1
+
+    print(f"\nSuccessfully merged persona clusters. Updated {count} face sidecars.")
+    return 0
+
+
+def run_merge_on_completion(images_dir: str):
+    """Consolidate duplicate persona clusters with the same name silently/report style on completion."""
+    labels_path = os.path.join(images_dir, "labels.json")
+    if not os.path.exists(labels_path):
+        return
+    try:
+        with open(labels_path) as f:
+            labels_map = json.load(f)
+    except Exception:
+        return
+    duplicates = find_duplicate_personas(labels_map)
+    if not duplicates:
+        return
+    print("\nMerging duplicate personas...")
+    for name, cids in duplicates.items():
+        print(f"  '{name}': {', '.join(cids)} -> canonical: {cids[0]}")
+    new_labels, count = merge_persona_clusters(images_dir, labels_map)
+    try:
+        write_labels(images_dir, new_labels)
+        print(f"Successfully merged persona clusters. Updated {count} face sidecars.")
+    except Exception as e:
+        print(f"Failed to write updated labels: {e}")
+
 
 
 def main(argv: list[str]) -> int:
@@ -1676,6 +1957,10 @@ def main(argv: list[str]) -> int:
                         help="per-person centroid coverage (faces + unique images)")
     rp.add_argument("--images", default="extracted")
 
+    me = sub.add_parser("merge",
+                        help="merge duplicate persona clusters sharing the same name")
+    me.add_argument("--images", default="extracted")
+
     args = p.parse_args(argv[1:])
     if args.cmd == "detect":
         if args.backfill_age:
@@ -1693,6 +1978,8 @@ def main(argv: list[str]) -> int:
                          args.threshold, args.apply, args.review)
     if args.cmd == "report":
         return run_report(args.images)
+    if args.cmd == "merge":
+        return run_merge(args.images)
     return 1
 
 

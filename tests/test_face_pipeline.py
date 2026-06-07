@@ -647,3 +647,204 @@ def test_cluster_face_index_includes_age(tmp_path):
     index = {"model": "buffalo_l", "rows": [{"image": "a.jpg", "face_id": 0}]}
     ci = fp.cluster_face_index(d, index)
     assert ci["person_000"][0]["age"] == 30
+
+
+def test_find_duplicate_personas():
+    # empty
+    assert fp.find_duplicate_personas({}) == {}
+    
+    # unique names
+    labels = {"person_000": "Alice", "person_001": "Bob"}
+    assert fp.find_duplicate_personas(labels) == {}
+    
+    # duplicate names
+    labels = {
+        "person_000": "Alice",
+        "person_001": "Alice",
+        "person_002": "Bob",
+        "person_003": "Alice",
+        "person_004": "Bob"
+    }
+    expected = {
+        "Alice": ["person_000", "person_001", "person_003"],
+        "Bob": ["person_002", "person_004"]
+    }
+    assert fp.find_duplicate_personas(labels) == expected
+    
+    # ignore empty/unnamed clusters
+    labels = {"person_000": "", "person_001": "", "person_002": "Alice"}
+    assert fp.find_duplicate_personas(labels) == {}
+
+
+def test_merge_persona_clusters(tmp_path):
+    d = str(tmp_path)
+    
+    # Write a sidecar for image a: one face in person_001, one face in person_002
+    fp.write_faces_json(os.path.join(d, "a.jpg"), (100, 100), "buffalo_l", [
+        {"id": 0, "bbox": [0, 0, 10, 10], "det_score": 0.9, "cluster": "person_001", "label": "John"},
+        {"id": 1, "bbox": [20, 20, 30, 30], "det_score": 0.9, "cluster": "person_002", "label": "John"}
+    ])
+    
+    # Write a sidecar for image b: one face in person_002
+    fp.write_faces_json(os.path.join(d, "b.jpg"), (100, 100), "buffalo_l", [
+        {"id": 0, "bbox": [0, 0, 10, 10], "det_score": 0.9, "cluster": "person_002", "label": "John"}
+    ])
+    
+    # Write a sidecar for image c: one face in unrelated person_003
+    fp.write_faces_json(os.path.join(d, "c.jpg"), (100, 100), "buffalo_l", [
+        {"id": 0, "bbox": [0, 0, 10, 10], "det_score": 0.9, "cluster": "person_003", "label": "Alice"}
+    ])
+    
+    labels_map = {
+        "person_001": "John",
+        "person_002": "John",
+        "person_003": "Alice"
+    }
+    
+    new_labels, count = fp.merge_persona_clusters(d, labels_map)
+    
+    # person_002 (duplicate of John) should be merged into person_001
+    assert new_labels == {"person_001": "John", "person_003": "Alice"}
+    assert count == 2 # two faces of person_002 updated
+    
+    # Verify sidecar files
+    data_a = fp.read_faces_json(os.path.join(d, "a.jpg"))
+    assert data_a["faces"][0]["cluster"] == "person_001"
+    assert data_a["faces"][1]["cluster"] == "person_001" # was person_002
+    
+    data_b = fp.read_faces_json(os.path.join(d, "b.jpg"))
+    assert data_b["faces"][0]["cluster"] == "person_001" # was person_002
+    
+    data_c = fp.read_faces_json(os.path.join(d, "c.jpg"))
+    assert data_c["faces"][0]["cluster"] == "person_003" # untouched
+
+
+def test_run_merge_missing_labels(tmp_path):
+    d = str(tmp_path)
+    assert fp.main(["face_pipeline.py", "merge", "--images", d]) == 1
+
+
+def test_run_merge_success(tmp_path):
+    d = str(tmp_path)
+    # Write a sidecar for image a
+    fp.write_faces_json(os.path.join(d, "a.jpg"), (100, 100), "buffalo_l", [
+        {"id": 0, "bbox": [0, 0, 10, 10], "det_score": 0.9, "cluster": "person_001", "label": "John"},
+        {"id": 1, "bbox": [20, 20, 30, 30], "det_score": 0.9, "cluster": "person_002", "label": "John"}
+    ])
+    
+    # Write labels.json
+    labels_map = {"person_001": "John", "person_002": "John"}
+    with open(os.path.join(d, "labels.json"), "w") as f:
+        json.dump(labels_map, f)
+        
+    assert fp.main(["face_pipeline.py", "merge", "--images", d]) == 0
+    
+    # Read updated labels
+    with open(os.path.join(d, "labels.json")) as f:
+        new_labels = json.load(f)
+    assert new_labels == {"person_001": "John"}
+
+
+def test_run_merge_on_completion(tmp_path):
+    d = str(tmp_path)
+    # Write a sidecar for image a
+    fp.write_faces_json(os.path.join(d, "a.jpg"), (100, 100), "buffalo_l", [
+        {"id": 0, "bbox": [0, 0, 10, 10], "det_score": 0.9, "cluster": "person_001", "label": "John"},
+        {"id": 1, "bbox": [20, 20, 30, 30], "det_score": 0.9, "cluster": "person_002", "label": "John"}
+    ])
+    
+    # Write labels.json
+    labels_map = {"person_001": "John", "person_002": "John"}
+    with open(os.path.join(d, "labels.json"), "w") as f:
+        json.dump(labels_map, f)
+        
+    # Calling run_merge_on_completion should perform the merge
+    fp.run_merge_on_completion(d)
+    
+    # Verify labels.json was updated
+    with open(os.path.join(d, "labels.json")) as f:
+        new_labels = json.load(f)
+    assert new_labels == {"person_001": "John"}
+    
+    # Verify sidecar was updated
+    data_a = fp.read_faces_json(os.path.join(d, "a.jpg"))
+    assert data_a["faces"][1]["cluster"] == "person_001"
+
+
+def test_on_q_key_behavior():
+    class DummyApp:
+        def __init__(self):
+            self.closed = False
+        def _on_close(self):
+            self.closed = True
+        def _on_q_key(self, event):
+            if event.widget.winfo_class() in ("TEntry", "Entry"):
+                return
+            self._on_close()
+
+    app = DummyApp()
+    
+    class MockWidget:
+        def __init__(self, cls):
+            self.cls = cls
+        def winfo_class(self):
+            return self.cls
+            
+    class MockEvent:
+        def __init__(self, widget):
+            self.widget = widget
+            
+    # If widget is TEntry, should NOT close
+    app._on_q_key(MockEvent(MockWidget("TEntry")))
+    assert not app.closed
+    
+    # If widget is Entry, should NOT close
+    app._on_q_key(MockEvent(MockWidget("Entry")))
+    assert not app.closed
+    
+    # If widget is Frame, SHOULD close
+    app._on_q_key(MockEvent(MockWidget("Frame")))
+    assert app.closed
+
+
+def test_run_match_headless_calls_merge(tmp_path):
+    d = str(tmp_path)
+    # Write a sidecar for image a
+    fp.write_faces_json(os.path.join(d, "a.jpg"), (100, 100), "buffalo_l", [
+        {"id": 0, "bbox": [0, 0, 10, 10], "det_score": 0.9, "cluster": "person_001", "label": ""},
+        {"id": 1, "bbox": [20, 20, 30, 30], "det_score": 0.9, "cluster": "person_002", "label": ""}
+    ])
+    
+    # Write cache npy and json
+    emb = np.zeros((2, 512), dtype=np.float32)
+    emb[0, 0] = 1.0
+    emb[1, 0] = 1.0
+    np.save(os.path.join(d, "faces.npy"), emb)
+    
+    index = {
+        "model": "buffalo_l",
+        "rows": [
+            {"image": "a.jpg", "face_id": 0},
+            {"image": "a.jpg", "face_id": 1}
+        ]
+    }
+    with open(os.path.join(d, "faces_index.json"), "w") as f:
+        json.dump(index, f)
+        
+    # Write gallery labels.json
+    labels_map = {"person_001": "John", "person_002": "John"}
+    gallery_path = os.path.join(d, "labels.json")
+    with open(gallery_path, "w") as f:
+        json.dump(labels_map, f)
+        
+    from unittest.mock import patch
+    with patch("face_pipeline.run_merge_on_completion") as mock_merge:
+        # Run match with review=False and apply=True
+        fp.run_match(d, gallery_path, apply=True, review=False)
+        mock_merge.assert_called_once_with(d)
+
+
+
+
+
+
