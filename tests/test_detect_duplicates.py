@@ -61,3 +61,38 @@ def test_find_duplicate_groups(tmp_path):
     assert file_meta[img1_path]["width"] == 100
     assert file_meta[img2_path]["width"] == 50
 
+def test_resolve_duplicates(tmp_path):
+    from detect_duplicates import resolve_duplicates
+    # Set up files
+    img1_path = os.path.join(tmp_path, "img1.jpg") # larger size/resolution
+    img2_path = os.path.join(tmp_path, "img2.jpg") # smaller size/resolution
+    
+    with open(img1_path, "wb") as f:
+        f.write(b"img1_data_large_fake")
+    with open(img2_path, "wb") as f:
+        f.write(b"img2_data")
+        
+    # Create fake sidecar for img2
+    sidecar_path = os.path.join(tmp_path, "img2.faces.json")
+    with open(sidecar_path, "w") as f:
+        f.write('{"test": true}')
+        
+    groups = [[img1_path, img2_path]]
+    file_meta = {
+        img1_path: {"width": 100, "height": 100, "size": 20},
+        img2_path: {"width": 50, "height": 50, "size": 9}
+    }
+    
+    moved = resolve_duplicates(groups, file_meta, dry_run=False)
+    
+    # We expect img1 to be kept, img2 and its sidecar to be moved to duplicates/
+    assert len(moved) == 1
+    assert moved[0] == (img2_path, os.path.join(tmp_path, "duplicates", "img2.jpg"))
+    
+    assert os.path.exists(img1_path)
+    assert not os.path.exists(img2_path)
+    assert not os.path.exists(sidecar_path)
+    assert os.path.exists(os.path.join(tmp_path, "duplicates", "img2.jpg"))
+    assert os.path.exists(os.path.join(tmp_path, "duplicates", "img2.faces.json"))
+
+
