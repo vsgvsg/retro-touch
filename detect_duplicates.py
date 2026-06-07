@@ -76,3 +76,40 @@ def find_duplicate_groups(images_dir: str, threshold: int = 2) -> tuple[list[lis
     duplicate_groups = [grp for grp in groups_map.values() if len(grp) > 1]
     return duplicate_groups, file_meta
 
+import shutil
+
+def resolve_duplicates(duplicate_groups: list[list[str]], file_meta: dict[str, dict], dry_run: bool = False) -> list[tuple[str, str]]:
+    moved_files = []
+    for grp in duplicate_groups:
+        # Sort group by: resolution desc, size desc, filename asc
+        grp_sorted = sorted(grp, key=lambda p: (
+            -(file_meta[p]["width"] * file_meta[p]["height"]),
+            -file_meta[p]["size"],
+            p
+        ))
+        
+        primary = grp_sorted[0]
+        duplicates = grp_sorted[1:]
+        
+        print(f"Keeping primary: {os.path.basename(primary)} ({file_meta[primary]['width']}x{file_meta[primary]['height']}, {file_meta[primary]['size']} bytes)")
+        
+        for dup in duplicates:
+            dest_dir = os.path.join(os.path.dirname(dup), "duplicates")
+            dest_path = os.path.join(dest_dir, os.path.basename(dup))
+            print(f"  Duplicate to move: {os.path.basename(dup)} ({file_meta[dup]['width']}x{file_meta[dup]['height']}, {file_meta[dup]['size']} bytes) -> {dest_path}")
+            
+            # Check sidecar
+            stem, _ = os.path.splitext(dup)
+            sidecar = stem + ".faces.json"
+            
+            if not dry_run:
+                os.makedirs(dest_dir, exist_ok=True)
+                shutil.move(dup, dest_path)
+                if os.path.exists(sidecar):
+                    shutil.move(sidecar, os.path.join(dest_dir, os.path.basename(sidecar)))
+            
+            moved_files.append((dup, dest_path))
+            
+    return moved_files
+
+
