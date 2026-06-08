@@ -56,6 +56,14 @@ def test_coalesce_location_hit():
     assert entry is not None
     assert entry["city"] == "Penza"
 
+def test_coalesce_location_non_first_hit():
+    # Point ~500m from Orenburg (2nd entry in CACHE) -> should match within 1000m
+    # Orenburg is at (51.7727, 55.0988)
+    entry = ep.coalesce_location(51.7730, 55.0988, CACHE, tolerance_m=1000)
+    assert entry is not None
+    assert entry["city"] == "Orenburg"
+
+
 def test_coalesce_location_miss():
     # Point far from both -> no match
     entry = ep.coalesce_location(52.0000, 44.0000, CACHE, tolerance_m=1000)
@@ -267,6 +275,31 @@ def test_location_cache_recording(tmp_path):
     top_entries = cache.top(1)
     assert len(top_entries) == 1
     assert top_entries[0]["city"] == "Penza"
+
+def test_location_cache_record_non_first_hit(tmp_path):
+    from exif_pipeline import LocationCache
+    db_file = tmp_path / "locations.json"
+    cache = LocationCache(path=db_file)
+    
+    # Add first location
+    cache.record(53.2007, 45.0046, "Penza", "Penza Oblast", "Russia", "Penza, Russia")
+    # Add second location
+    cache.record(51.7727, 55.0988, "Orenburg", "Orenburg Oblast", "Russia", "Orenburg, Russia")
+    
+    # Record near the second location
+    entry = cache.record(51.7730, 55.0988, "Orenburg", "Orenburg Oblast", "Russia", "Orenburg, Russia")
+    
+    assert entry["city"] == "Orenburg"
+    assert entry["use_count"] == 2
+    
+    # Check the actual list
+    entries = cache.all_entries()
+    assert len(entries) == 2
+    assert entries[0]["city"] == "Penza"
+    assert entries[0]["use_count"] == 1
+    assert entries[1]["city"] == "Orenburg"
+    assert entries[1]["use_count"] == 2
+
 
 
 
