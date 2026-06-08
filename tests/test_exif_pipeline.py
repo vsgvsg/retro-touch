@@ -86,6 +86,14 @@ def test_format_taken_month_none_omitted():
     d = ep.format_taken(1965, month=None)
     assert "month" not in d
 
+def test_format_taken_invalid_month():
+    with pytest.raises(ValueError):
+        ep.format_taken(1960, month=13)
+    with pytest.raises(ValueError):
+        ep.format_taken(1960, month=0)
+    with pytest.raises(ValueError):
+        ep.format_taken(1960, month=-5)
+
 # --- parse_nominatim_address ---
 
 def test_parse_nominatim_city():
@@ -111,6 +119,10 @@ def test_parse_nominatim_empty():
     city, state, country, display = ep.parse_nominatim_address({"address": {}})
     assert city == state == country == display == ""
 
+def test_parse_nominatim_none():
+    city, state, country, display = ep.parse_nominatim_address(None)
+    assert city == state == country == display == ""
+
 # --- decimal_to_dms ---
 
 def test_decimal_to_dms_positive():
@@ -125,7 +137,14 @@ def test_decimal_to_dms_zero():
     deg, mins, secs = ep.decimal_to_dms(0.0)
     assert deg == (0, 1)
     assert mins == (0, 1)
-    assert secs[0] == 0
+    assert secs == (0, 100)
+
+def test_decimal_to_dms_negative():
+    deg, mins, secs = ep.decimal_to_dms(-53.2007)
+    assert deg == (53, 1)
+    assert mins == (12, 1)
+    d_secs = secs[0] / secs[1]
+    assert abs(d_secs - 2.52) < 0.1
 
 # --- normalize_bbox ---
 
@@ -142,4 +161,12 @@ def test_normalize_bbox_full_image():
     assert cy == pytest.approx(0.5)
     assert bw == pytest.approx(1.0)
     assert bh == pytest.approx(1.0)
+
+def test_normalize_bbox_clamping():
+    cx, cy, bw, bh = ep.normalize_bbox([-50, -50, 150, 150], 100, 100)
+    assert cx == pytest.approx(0.5)
+    assert cy == pytest.approx(0.5)
+    assert bw == pytest.approx(1.0)
+    assert bh == pytest.approx(1.0)
+
 
