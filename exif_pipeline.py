@@ -51,6 +51,8 @@ def coalesce_location(lat: float, lng: float, cache: list, tolerance_m: float = 
 
 def format_taken(year: int, month: int | None = None) -> dict:
     """Build the 'taken' sidecar dict. month is omitted (not None) when unknown."""
+    if year <= 0:
+        raise ValueError("year must be a positive integer")
     if month is not None and not (1 <= month <= 12):
         raise ValueError("month must be between 1 and 12 (inclusive)")
     d = {"year": year, "source": "manual"}
@@ -64,6 +66,8 @@ def parse_nominatim_address(response: dict | None) -> tuple:
     if not response or not isinstance(response, dict):
         return "", "", "", ""
     addr = response.get("address", {})
+    if not isinstance(addr, dict):
+        addr = {}
     city = addr.get("city") or addr.get("town") or addr.get("village") or ""
     state = addr.get("state") or addr.get("province") or ""
     country = addr.get("country") or ""
@@ -73,6 +77,8 @@ def parse_nominatim_address(response: dict | None) -> tuple:
 
 def decimal_to_dms(deg: float) -> tuple:
     """Convert decimal degrees to (deg, min, sec) as piexif rational tuples [(num,den)...]."""
+    if not (0.0 <= abs(deg) <= 180.0):
+        raise ValueError("degrees must be between -180.0 and 180.0 (inclusive)")
     deg = abs(deg)
     total_sec_hundredths = round(deg * 360000)
     d = total_sec_hundredths // 360000
@@ -84,7 +90,12 @@ def decimal_to_dms(deg: float) -> tuple:
 
 def normalize_bbox(bbox: list, img_w: int, img_h: int) -> tuple:
     """Convert pixel bbox [x1,y1,x2,y2] to MWG normalized (cx,cy,bw,bh) in [0..1]."""
+    if img_w <= 0 or img_h <= 0:
+        raise ValueError("Image dimensions must be positive integers")
     x1, y1, x2, y2 = bbox
+    # Ensure coordinate order
+    x1, x2 = min(x1, x2), max(x1, x2)
+    y1, y2 = min(y1, y2), max(y1, y2)
     # Clamp pixel inputs to image bounds
     x1 = max(0, min(x1, img_w))
     x2 = max(0, min(x2, img_w))
