@@ -116,3 +116,92 @@ def normalize_bbox(bbox: list, img_w: int, img_h: int) -> tuple:
     return cx, cy, bw, bh
 
 
+import time
+import urllib.request
+import urllib.parse
+import json as _json
+
+class NominatimClient:
+    """Thin Nominatim geocoder — enforces 1.1 s between requests, caches by query."""
+
+    BASE = "https://nominatim.openstreetmap.org"
+    UA = "retro-touch/1.0 (photo-archival-tool)"
+
+    def __init__(self):
+        self._last = 0.0
+        self._cache: dict[str, list] = {}
+
+    def _get(self, url: str) -> dict | list:
+        elapsed = time.monotonic() - self._last
+        if elapsed < 1.1:
+            time.sleep(1.1 - elapsed)
+        req = urllib.request.Request(url, headers={"User-Agent": self.UA})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            data = _json.loads(r.read())
+        self._last = time.monotonic()
+        return data
+
+    def search(self, query: str) -> list:
+        """Return list of Nominatim result dicts for query string."""
+        if query in self._cache:
+            return self._cache[query]
+        params = urllib.parse.urlencode({"q": query, "format": "json",
+                                         "addressdetails": 1, "limit": 5})
+        results = self._get(f"{self.BASE}/search?{params}")
+        self._cache[query] = results
+        return results
+
+    def reverse(self, lat: float, lng: float) -> dict | None:
+        """Reverse-geocode (lat, lng); return result dict or None on failure."""
+        params = urllib.parse.urlencode({"lat": lat, "lon": lng,
+                                         "format": "json", "addressdetails": 1})
+        try:
+            return self._get(f"{self.BASE}/reverse?{params}")
+        except Exception:
+            return None
+
+
+import pathlib
+
+LOCATIONS_PATH = pathlib.Path("extracted/locations.json")
+
+class LocationCache:
+    """Reads/writes extracted/locations.json; coalesces entries within 1000 m."""
+
+    TOLERANCE_M = 1000
+
+    def __init__(self, path: pathlib.Path = LOCATIONS_PATH):
+        self.path = path
+        self._data: list = []
+        self._load()
+
+    def _load(self):
+        if self.path.exists():
+            with open(self.path) as f:
+                self._data = _json.load(f).get("locations", [])
+
+    def _save(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.path, "w") as f:
+            _json.dump({"locations": self._data}, f, indent=2, ensure_ascii=False)
+
+    def top(self, n: int = 8) -> list:
+        """Return top-n entries by use_count."""
+        return sorted(self._data, key=lambda e: e["use_count"], reverse=True)[:n]
+
+    def all_entries(self) -> list:
+        return list(self._data)
+
+    def record(self, lat: float, lng: float, city: str, state: str,
+               country: str, display_name: str) -> dict:
+        """Add or update a location entry; return the (possibly updated) entry."""
+        existing = coalesce_location(lat, lng, self._data, self.TOLERANCE_M)
+        if existing:
+            existing["use_count"] += 1
+            self._save()
+            return existing
+        entry = {"lat": lat, "lng": lng, "display_name": display_name,
+                 "city": city, "state": state, "country": country, "use_count": 1}
+        self._data.append(entry)
+        self._save()
+        return entry

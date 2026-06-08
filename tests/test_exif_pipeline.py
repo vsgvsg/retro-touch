@@ -205,4 +205,69 @@ def test_normalize_bbox_coordinate_order():
     assert bh == pytest.approx(1.0)
 
 
+# --- NominatimClient and LocationCache ---
+
+def test_nominatim_client_search_cache(monkeypatch):
+    # Test NominatimClient exists and uses cache
+    from exif_pipeline import NominatimClient
+    client = NominatimClient()
+    
+    call_count = 0
+    def mock_get(url):
+        nonlocal call_count
+        call_count += 1
+        return [{"lat": "53.2007", "lon": "45.0046"}]
+    
+    monkeypatch.setattr(client, "_get", mock_get)
+    
+    res1 = client.search("Penza")
+    res2 = client.search("Penza")
+    
+    assert res1 == [{"lat": "53.2007", "lon": "45.0046"}]
+    assert res2 == res1
+    assert call_count == 1  # Cache was used
+
+def test_nominatim_client_reverse(monkeypatch):
+    from exif_pipeline import NominatimClient
+    client = NominatimClient()
+    
+    def mock_get(url):
+        return {"address": {"city": "Penza"}}
+        
+    monkeypatch.setattr(client, "_get", mock_get)
+    
+    res = client.reverse(53.2007, 45.0046)
+    assert res == {"address": {"city": "Penza"}}
+
+def test_location_cache_recording(tmp_path):
+    from exif_pipeline import LocationCache
+    db_file = tmp_path / "locations.json"
+    cache = LocationCache(path=db_file)
+    
+    # Empty cache initially
+    assert cache.all_entries() == []
+    
+    # Record first location
+    entry1 = cache.record(53.2007, 45.0046, "Penza", "Penza Oblast", "Russia", "Penza, Russia")
+    assert entry1["use_count"] == 1
+    assert len(cache.all_entries()) == 1
+    
+    # Record same location (should coalesce within 1000m and increase use_count)
+    # 53.2008, 45.0046 is extremely close to 53.2007, 45.0046
+    entry2 = cache.record(53.2008, 45.0046, "Penza", "Penza Oblast", "Russia", "Penza, Russia")
+    assert entry2["use_count"] == 2
+    assert len(cache.all_entries()) == 1
+    
+    # Record far location
+    entry3 = cache.record(55.7558, 37.6173, "Moscow", "Moscow", "Russia", "Moscow, Russia")
+    assert entry3["use_count"] == 1
+    assert len(cache.all_entries()) == 2
+    
+    # Test top() method
+    top_entries = cache.top(1)
+    assert len(top_entries) == 1
+    assert top_entries[0]["city"] == "Penza"
+
+
+
 
