@@ -437,6 +437,117 @@ def test_nominatim_client_reverse_type_conversion(monkeypatch):
     assert client.reverse("abc", "45.0046") is None
 
 
+# --- write_exif_xmp ---
+
+def test_write_exif_xmp(tmp_path):
+    from PIL import Image
+    import piexif
+    from libxmp import XMPFiles
+    
+    # 1. Create a dummy image
+    img_path = str(tmp_path / "test.jpg")
+    img = Image.new("RGB", (100, 100), color="blue")
+    img.save(img_path, "JPEG")
+    
+    taken = {"year": 1995, "month": 8}
+    location = {
+        "lat": 53.2007,
+        "lng": -45.0046,
+        "display_name": "Test Location, World",
+        "city": "Test City",
+        "state": "Test State",
+        "country": "Test Country"
+    }
+    faces = [
+        {"bbox": [10, 20, 30, 40], "label": "Alice"},
+        {"bbox": [50, 50, 70, 70], "label": "Bob"},
+        {"bbox": [0, 0, 10, 10], "label": None}  # unlabeled, should be ignored
+    ]
+    image_size = [100, 100]
+    
+    # Call write_exif_xmp (should be defined in ep)
+    success = ep.write_exif_xmp(img_path, taken, location, faces, image_size)
+    assert success is True
+    
+    # 2. Verify EXIF metadata
+    exif_dict = piexif.load(img_path)
+    assert exif_dict["Exif"][piexif.ExifIFD.DateTimeOriginal] == b"1995:08:01 00:00:00"
+    
+    gps = exif_dict["GPS"]
+    # Check GPS values and refs
+    assert gps[piexif.GPSIFD.GPSLatitudeRef] == b"N"
+    assert gps[piexif.GPSIFD.GPSLongitudeRef] == b"W"
+    
+    # Convert lat/lng back from DMS to verify
+    def dms_to_decimal(dms, ref):
+        # dms is ((d, 1), (m, 1), (s, 100))
+        d = dms[0][0] / dms[0][1]
+        m = dms[1][0] / dms[1][1]
+        s = dms[2][0] / dms[2][1]
+        val = d + m / 60.0 + s / 3600.0
+        if ref in (b"S", b"W"):
+            val = -val
+        return val
+
+    assert dms_to_decimal(gps[piexif.GPSIFD.GPSLatitude], gps[piexif.GPSIFD.GPSLatitudeRef]) == pytest.approx(53.2007)
+    assert dms_to_decimal(gps[piexif.GPSIFD.GPSLongitude], gps[piexif.GPSIFD.GPSLongitudeRef]) == pytest.approx(-45.0046)
+    
+    # 3. Verify XMP metadata
+    xmp_file = XMPFiles(file_path=img_path, open_forupdate=False)
+    xmp = xmp_file.get_xmp()
+    assert xmp is not None
+    xmp_file.close_file()
+    
+    # Check description
+    desc = xmp.get_localized_text("http://purl.org/dc/elements/1.1/", "description", "x-default", "x-default")
+    assert desc == "Test Location, World"
+    
+    # Check PersonInImage
+    # namespace NS_IPTC = "http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/"
+    ns_iptc = "http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/"
+    assert xmp.does_property_exist(ns_iptc, "PersonInImage")
+    person_count = xmp.count_array_items(ns_iptc, "PersonInImage")
+    assert person_count == 2
+    persons = [xmp.get_array_item(ns_iptc, "PersonInImage", i+1) for i in range(2)]
+    assert set(persons) == {"Alice", "Bob"}
+    
+    # Check MWG Regions
+    ns_mwg_rs = "http://www.metadataworkinggroup.com/schemas/regions/"
+    # Alice: cx, cy, bw, bh from [10, 20, 30, 40]
+    # x1=10, y1=20, x2=30, y2=40
+    # cx = 20/100 = 0.2, cy = 30/100 = 0.3
+    # bw = 20/100 = 0.2, bh = 20/100 = 0.2
+    
+    # Bob: x1=50, y1=50, x2=70, y2=70
+    # cx = 60/100 = 0.6, cy = 60/100 = 0.6
+    # bw = 20/100 = 0.2, bh = 20/100 = 0.2
+    
+    # Verify both region entries
+    region_names = []
+    region_coords = {}
+    for i in range(1, 3):
+        base = f"Regions/mwg-rs:RegionList[{i}]"
+        name = xmp.get_property(ns_mwg_rs, f"{base}/mwg-rs:Name")
+        region_names.append(name)
+        
+        cx = xmp.get_property_float(ns_mwg_rs, f"{base}/mwg-rs:Area/stArea:x")
+        cy = xmp.get_property_float(ns_mwg_rs, f"{base}/mwg-rs:Area/stArea:y")
+        bw = xmp.get_property_float(ns_mwg_rs, f"{base}/mwg-rs:Area/stArea:w")
+        bh = xmp.get_property_float(ns_mwg_rs, f"{base}/mwg-rs:Area/stArea:h")
+        region_coords[name] = (cx, cy, bw, bh)
+        
+        reg_type = xmp.get_property(ns_mwg_rs, f"{base}/mwg-rs:Type")
+        assert reg_type == "Face"
+        
+        unit = xmp.get_property(ns_mwg_rs, f"{base}/mwg-rs:Area/stArea:unit")
+        assert unit == "normalized"
+        
+    assert set(region_names) == {"Alice", "Bob"}
+    assert region_coords["Alice"] == (pytest.approx(0.2), pytest.approx(0.3), pytest.approx(0.2), pytest.approx(0.2))
+    assert region_coords["Bob"] == (pytest.approx(0.6), pytest.approx(0.6), pytest.approx(0.2), pytest.approx(0.2))
+
+
+
 
 
 

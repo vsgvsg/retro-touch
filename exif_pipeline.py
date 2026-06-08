@@ -13,6 +13,12 @@ import pathlib
 import urllib.request
 import urllib.parse
 import json as _json
+import shutil
+import piexif
+import piexif.helper
+from PIL import Image
+from libxmp import XMPFiles, XMPMeta, XMPError
+
 
 
 # ---------------------------------------------------------------------------
@@ -228,3 +234,131 @@ class LocationCache:
         self._data.append(entry)
         self._save()
         return entry
+
+
+# XMP namespaces
+NS_MWG_RS  = "http://www.metadataworkinggroup.com/schemas/regions/"
+NS_MWG_RS_TYPE = "http://www.metadataworkinggroup.com/schemas/regions/"
+NS_DC      = "http://purl.org/dc/elements/1.1/"
+NS_IPTC    = "http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/"
+
+def write_exif_xmp(jpg_path: str, taken: dict, location: dict, faces: list,
+                   image_size: list) -> bool:
+    """Write EXIF/GPS/XMP/IPTC tags to jpg_path.
+
+    Args:
+        jpg_path:   absolute or relative path to the .jpg file
+        taken:      dict with 'year' and optional 'month'
+        location:   dict with 'lat', 'lng', 'display_name', 'city', 'state', 'country'
+        faces:      list of face dicts from the sidecar (only labeled ones used)
+        image_size: [width, height] of the image
+
+    Returns:
+        True on success, False if write failed.
+    """
+    tmp_path = jpg_path + ".tmp"
+    try:
+        # Copy image bytes first to tmp
+        shutil.copy2(jpg_path, tmp_path)
+
+        # --- XMP: description + MWG regions + IPTC keywords ---
+        img_w, img_h = image_size[0], image_size[1]
+        labeled = [f for f in faces if f.get("label")]
+
+        xmpfile = XMPFiles(file_path=tmp_path, open_forupdate=True)
+        xmp = xmpfile.get_xmp()
+        if xmp is None:
+            xmp = XMPMeta()
+
+        # dc:description
+        xmp.register_namespace(NS_DC, "dc")
+        try:
+            xmp.set_localized_text(NS_DC, "description", "x-default", "x-default",
+                                   location["display_name"])
+        except XMPError:
+            pass
+
+        # MWG Regions
+        xmp.register_namespace(NS_MWG_RS, "mwg-rs")
+        xmp.register_namespace(
+            "http://www.metadataworkinggroup.com/schemas/regions/", "mwg-rs")
+        xmp.register_namespace("http://ns.adobe.com/xmp/sType/Area#", "stArea")
+        # Clear existing regions then write fresh
+        try:
+            xmp.delete_property(NS_MWG_RS, "Regions")
+        except XMPError:
+            pass
+        if labeled:
+            for i, face in enumerate(labeled):
+                xmp.append_array_item(NS_MWG_RS, "Regions/mwg-rs:RegionList", None, {"prop_array_is_unordered": True}, prop_value_is_struct=True)
+                cx, cy, bw, bh = normalize_bbox(face["bbox"], img_w, img_h)
+                base = f"Regions/mwg-rs:RegionList[{i+1}]"
+                xmp.set_property(NS_MWG_RS, f"{base}/mwg-rs:Name", face["label"])
+                xmp.set_property(NS_MWG_RS, f"{base}/mwg-rs:Type", "Face")
+                xmp.set_property(NS_MWG_RS, f"{base}/mwg-rs:Area/stArea:unit", "normalized")
+                xmp.set_property_float(NS_MWG_RS, f"{base}/mwg-rs:Area/stArea:x", cx)
+                xmp.set_property_float(NS_MWG_RS, f"{base}/mwg-rs:Area/stArea:y", cy)
+                xmp.set_property_float(NS_MWG_RS, f"{base}/mwg-rs:Area/stArea:w", bw)
+                xmp.set_property_float(NS_MWG_RS, f"{base}/mwg-rs:Area/stArea:h", bh)
+
+        # IPTC keywords (person names)
+        xmp.register_namespace(NS_IPTC, "Iptc4xmpCore")
+        names = list(dict.fromkeys(f["label"] for f in labeled))  # unique, ordered
+        try:
+            xmp.delete_property(NS_IPTC, "PersonInImage")
+        except XMPError:
+            pass
+        for name in names:
+            xmp.append_array_item(NS_IPTC, "PersonInImage",
+                                  name, {"prop_array_is_unordered": True})
+
+        xmpfile.put_xmp(xmp)
+        xmpfile.close_file()
+
+        # --- Build DateTimeOriginal string ---
+        year  = taken["year"]
+        month = taken.get("month", 1)
+        dt_str = f"{year:04d}:{month:02d}:01 00:00:00"
+
+        # --- Read existing EXIF (or start fresh) ---
+        try:
+            exif_dict = piexif.load(tmp_path)
+        except Exception:
+            exif_dict = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}, "thumbnail": None}
+
+        # Date tags
+        dt_bytes = dt_str.encode("ascii")
+        exif_dict["Exif"][piexif.ExifIFD.DateTimeOriginal]  = dt_bytes
+        exif_dict["Exif"][piexif.ExifIFD.DateTimeDigitized] = dt_bytes
+        exif_dict["0th"][piexif.ImageIFD.DateTime]          = dt_bytes
+
+        # GPS tags
+        lat, lng = location["lat"], location["lng"]
+        lat_dms = decimal_to_dms(lat)
+        lng_dms = decimal_to_dms(lng)
+        exif_dict["GPS"][piexif.GPSIFD.GPSLatitude]     = lat_dms
+        exif_dict["GPS"][piexif.GPSIFD.GPSLongitude]    = lng_dms
+        exif_dict["GPS"][piexif.GPSIFD.GPSLatitudeRef]  = b"N" if lat >= 0 else b"S"
+        exif_dict["GPS"][piexif.GPSIFD.GPSLongitudeRef] = b"E" if lng >= 0 else b"W"
+
+        # Write EXIF to tmp file
+        exif_bytes = piexif.dump(exif_dict)
+        piexif.insert(exif_bytes, tmp_path)
+
+        # --- Verify tmp file opens cleanly ---
+        with Image.open(tmp_path) as im:
+            im.verify()
+
+        # --- Atomic replace ---
+        os.replace(tmp_path, jpg_path)
+        return True
+
+    except Exception as e:
+        # Clean up tmp on failure; leave original untouched
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        print(f"[exif] write failed for {jpg_path}: {e}")
+        return False
+
