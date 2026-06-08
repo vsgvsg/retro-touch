@@ -502,17 +502,23 @@ def test_write_exif_xmp(tmp_path):
     desc = xmp.get_localized_text("http://purl.org/dc/elements/1.1/", "description", "x-default", "x-default")
     assert desc == "Test Location, World"
     
-    # Check PersonInImage
-    # namespace NS_IPTC = "http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/"
-    ns_iptc = "http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/"
-    assert xmp.does_property_exist(ns_iptc, "PersonInImage")
-    person_count = xmp.count_array_items(ns_iptc, "PersonInImage")
+    # Check PersonInImage (IPTC Extension namespace)
+    ns_iptc_ext = "http://iptc.org/std/Iptc4xmpExt/2008-02-29/"
+    assert xmp.does_property_exist(ns_iptc_ext, "PersonInImage")
+    person_count = xmp.count_array_items(ns_iptc_ext, "PersonInImage")
     assert person_count == 2
-    persons = [xmp.get_array_item(ns_iptc, "PersonInImage", i+1) for i in range(2)]
+    persons = [xmp.get_array_item(ns_iptc_ext, "PersonInImage", i+1) for i in range(2)]
     assert set(persons) == {"Alice", "Bob"}
     
     # Check MWG Regions
     ns_mwg_rs = "http://www.metadataworkinggroup.com/schemas/regions/"
+    ns_st_dim = "http://ns.adobe.com/xap/1.0/sType/Dimensions#"
+    
+    # Check AppliedToDimensions
+    assert xmp.get_property(ns_mwg_rs, "Regions/mwg-rs:AppliedToDimensions/stDim:unit") == "pixel"
+    assert xmp.get_property_int(ns_mwg_rs, "Regions/mwg-rs:AppliedToDimensions/stDim:w") == 100
+    assert xmp.get_property_int(ns_mwg_rs, "Regions/mwg-rs:AppliedToDimensions/stDim:h") == 100
+
     # Alice: cx, cy, bw, bh from [10, 20, 30, 40]
     # x1=10, y1=20, x2=30, y2=40
     # cx = 20/100 = 0.2, cy = 30/100 = 0.3

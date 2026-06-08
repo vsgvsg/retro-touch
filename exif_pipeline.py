@@ -238,9 +238,9 @@ class LocationCache:
 
 # XMP namespaces
 NS_MWG_RS  = "http://www.metadataworkinggroup.com/schemas/regions/"
-NS_MWG_RS_TYPE = "http://www.metadataworkinggroup.com/schemas/regions/"
 NS_DC      = "http://purl.org/dc/elements/1.1/"
-NS_IPTC    = "http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/"
+NS_IPTC_EXT = "http://iptc.org/std/Iptc4xmpExt/2008-02-29/"
+NS_ST_DIM   = "http://ns.adobe.com/xap/1.0/sType/Dimensions#"
 
 def write_exif_xmp(jpg_path: str, taken: dict, location: dict, faces: list,
                    image_size: list) -> bool:
@@ -266,54 +266,64 @@ def write_exif_xmp(jpg_path: str, taken: dict, location: dict, faces: list,
         labeled = [f for f in faces if f.get("label")]
 
         xmpfile = XMPFiles(file_path=tmp_path, open_forupdate=True)
-        xmp = xmpfile.get_xmp()
-        if xmp is None:
-            xmp = XMPMeta()
-
-        # dc:description
-        xmp.register_namespace(NS_DC, "dc")
         try:
-            xmp.set_localized_text(NS_DC, "description", "x-default", "x-default",
-                                   location["display_name"])
-        except XMPError:
-            pass
+            xmp = xmpfile.get_xmp()
+            if xmp is None:
+                xmp = XMPMeta()
 
-        # MWG Regions
-        xmp.register_namespace(NS_MWG_RS, "mwg-rs")
-        xmp.register_namespace(
-            "http://www.metadataworkinggroup.com/schemas/regions/", "mwg-rs")
-        xmp.register_namespace("http://ns.adobe.com/xmp/sType/Area#", "stArea")
-        # Clear existing regions then write fresh
-        try:
-            xmp.delete_property(NS_MWG_RS, "Regions")
-        except XMPError:
-            pass
-        if labeled:
-            for i, face in enumerate(labeled):
-                xmp.append_array_item(NS_MWG_RS, "Regions/mwg-rs:RegionList", None, {"prop_array_is_unordered": True}, prop_value_is_struct=True)
-                cx, cy, bw, bh = normalize_bbox(face["bbox"], img_w, img_h)
-                base = f"Regions/mwg-rs:RegionList[{i+1}]"
-                xmp.set_property(NS_MWG_RS, f"{base}/mwg-rs:Name", face["label"])
-                xmp.set_property(NS_MWG_RS, f"{base}/mwg-rs:Type", "Face")
-                xmp.set_property(NS_MWG_RS, f"{base}/mwg-rs:Area/stArea:unit", "normalized")
-                xmp.set_property_float(NS_MWG_RS, f"{base}/mwg-rs:Area/stArea:x", cx)
-                xmp.set_property_float(NS_MWG_RS, f"{base}/mwg-rs:Area/stArea:y", cy)
-                xmp.set_property_float(NS_MWG_RS, f"{base}/mwg-rs:Area/stArea:w", bw)
-                xmp.set_property_float(NS_MWG_RS, f"{base}/mwg-rs:Area/stArea:h", bh)
+            # dc:description
+            xmp.register_namespace(NS_DC, "dc")
+            try:
+                xmp.set_localized_text(NS_DC, "description", "x-default", "x-default",
+                                       location["display_name"])
+            except XMPError:
+                pass
 
-        # IPTC keywords (person names)
-        xmp.register_namespace(NS_IPTC, "Iptc4xmpCore")
-        names = list(dict.fromkeys(f["label"] for f in labeled))  # unique, ordered
-        try:
-            xmp.delete_property(NS_IPTC, "PersonInImage")
-        except XMPError:
-            pass
-        for name in names:
-            xmp.append_array_item(NS_IPTC, "PersonInImage",
-                                  name, {"prop_array_is_unordered": True})
+            # MWG Regions
+            xmp.register_namespace(NS_MWG_RS, "mwg-rs")
+            xmp.register_namespace("http://ns.adobe.com/xmp/sType/Area#", "stArea")
+            xmp.register_namespace(NS_ST_DIM, "stDim")
+            # Clear existing regions then write fresh
+            try:
+                xmp.delete_property(NS_MWG_RS, "Regions")
+            except XMPError:
+                pass
 
-        xmpfile.put_xmp(xmp)
-        xmpfile.close_file()
+            # Add mwg-rs:AppliedToDimensions to Regions
+            xmp.set_property(NS_MWG_RS, "Regions/mwg-rs:AppliedToDimensions/stDim:unit", "pixel")
+            xmp.set_property_int(NS_MWG_RS, "Regions/mwg-rs:AppliedToDimensions/stDim:w", img_w)
+            xmp.set_property_int(NS_MWG_RS, "Regions/mwg-rs:AppliedToDimensions/stDim:h", img_h)
+
+            if labeled:
+                for i, face in enumerate(labeled):
+                    xmp.append_array_item(NS_MWG_RS, "Regions/mwg-rs:RegionList", None, {"prop_array_is_unordered": True}, prop_value_is_struct=True)
+                    cx, cy, bw, bh = normalize_bbox(face["bbox"], img_w, img_h)
+                    base = f"Regions/mwg-rs:RegionList[{i+1}]"
+                    xmp.set_property(NS_MWG_RS, f"{base}/mwg-rs:Name", face["label"])
+                    xmp.set_property(NS_MWG_RS, f"{base}/mwg-rs:Type", "Face")
+                    xmp.set_property(NS_MWG_RS, f"{base}/mwg-rs:Area/stArea:unit", "normalized")
+                    xmp.set_property_float(NS_MWG_RS, f"{base}/mwg-rs:Area/stArea:x", cx)
+                    xmp.set_property_float(NS_MWG_RS, f"{base}/mwg-rs:Area/stArea:y", cy)
+                    xmp.set_property_float(NS_MWG_RS, f"{base}/mwg-rs:Area/stArea:w", bw)
+                    xmp.set_property_float(NS_MWG_RS, f"{base}/mwg-rs:Area/stArea:h", bh)
+
+            # IPTC keywords (person names)
+            xmp.register_namespace(NS_IPTC_EXT, "Iptc4xmpExt")
+            names = list(dict.fromkeys(f["label"] for f in labeled))  # unique, ordered
+            try:
+                xmp.delete_property(NS_IPTC_EXT, "PersonInImage")
+            except XMPError:
+                pass
+            for name in names:
+                xmp.append_array_item(NS_IPTC_EXT, "PersonInImage",
+                                      name, {"prop_array_is_unordered": True})
+
+            xmpfile.put_xmp(xmp)
+        finally:
+            try:
+                xmpfile.close_file()
+            except Exception:
+                pass
 
         # --- Build DateTimeOriginal string ---
         year  = taken["year"]
@@ -325,6 +335,11 @@ def write_exif_xmp(jpg_path: str, taken: dict, location: dict, faces: list,
             exif_dict = piexif.load(tmp_path)
         except Exception:
             exif_dict = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}, "thumbnail": None}
+
+        # Defensive EXIF initialization
+        for key in ("0th", "Exif", "GPS"):
+            if key not in exif_dict:
+                exif_dict[key] = {}
 
         # Date tags
         dt_bytes = dt_str.encode("ascii")
