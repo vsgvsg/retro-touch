@@ -69,3 +69,77 @@ def test_coalesce_location_exact():
 def test_coalesce_location_empty_cache():
     entry = ep.coalesce_location(53.2007, 45.0046, [], tolerance_m=1000)
     assert entry is None
+
+
+# --- format_taken ---
+
+def test_format_taken_year_only():
+    d = ep.format_taken(1960)
+    assert d == {"year": 1960, "source": "manual"}
+    assert "month" not in d
+
+def test_format_taken_with_month():
+    d = ep.format_taken(1960, month=4)
+    assert d == {"year": 1960, "month": 4, "source": "manual"}
+
+def test_format_taken_month_none_omitted():
+    d = ep.format_taken(1965, month=None)
+    assert "month" not in d
+
+# --- parse_nominatim_address ---
+
+def test_parse_nominatim_city():
+    resp = {"address": {"city": "Penza", "state": "Penza Oblast", "country": "Russia"}}
+    city, state, country, display = ep.parse_nominatim_address(resp)
+    assert city == "Penza"
+    assert state == "Penza Oblast"
+    assert country == "Russia"
+    assert display == "Penza, Penza Oblast, Russia"
+
+def test_parse_nominatim_town_fallback():
+    resp = {"address": {"town": "Kstovo", "state": "Nizhny Novgorod Oblast", "country": "Russia"}}
+    city, state, country, display = ep.parse_nominatim_address(resp)
+    assert city == "Kstovo"
+
+def test_parse_nominatim_village_fallback():
+    resp = {"address": {"village": "Sosnovka", "country": "Russia"}}
+    city, state, country, display = ep.parse_nominatim_address(resp)
+    assert city == "Sosnovka"
+    assert display == "Sosnovka, Russia"
+
+def test_parse_nominatim_empty():
+    city, state, country, display = ep.parse_nominatim_address({"address": {}})
+    assert city == state == country == display == ""
+
+# --- decimal_to_dms ---
+
+def test_decimal_to_dms_positive():
+    deg, mins, secs = ep.decimal_to_dms(53.2007)
+    # 53 deg, 12 min, 2.52 sec (approx)
+    assert deg == (53, 1)
+    assert mins == (12, 1)
+    d_secs = secs[0] / secs[1]
+    assert abs(d_secs - 2.52) < 0.1
+
+def test_decimal_to_dms_zero():
+    deg, mins, secs = ep.decimal_to_dms(0.0)
+    assert deg == (0, 1)
+    assert mins == (0, 1)
+    assert secs[0] == 0
+
+# --- normalize_bbox ---
+
+def test_normalize_bbox_center():
+    cx, cy, bw, bh = ep.normalize_bbox([100, 200, 300, 400], 1000, 1000)
+    assert cx == pytest.approx(0.2)
+    assert cy == pytest.approx(0.3)
+    assert bw == pytest.approx(0.2)
+    assert bh == pytest.approx(0.2)
+
+def test_normalize_bbox_full_image():
+    cx, cy, bw, bh = ep.normalize_bbox([0, 0, 100, 100], 100, 100)
+    assert cx == pytest.approx(0.5)
+    assert cy == pytest.approx(0.5)
+    assert bw == pytest.approx(1.0)
+    assert bh == pytest.approx(1.0)
+

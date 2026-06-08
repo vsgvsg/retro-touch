@@ -47,3 +47,42 @@ def coalesce_location(lat: float, lng: float, cache: list, tolerance_m: float = 
         if haversine(lat, lng, entry["lat"], entry["lng"]) <= tolerance_m:
             return entry
     return None
+
+
+def format_taken(year: int, month: int | None = None) -> dict:
+    """Build the 'taken' sidecar dict. month is omitted (not None) when unknown."""
+    d = {"year": year, "source": "manual"}
+    if month is not None:
+        d["month"] = month
+    return d
+
+
+def parse_nominatim_address(response: dict) -> tuple:
+    """Parse a Nominatim geocode/reverse response into (city, state, country, display_name)."""
+    addr = response.get("address", {})
+    city = addr.get("city") or addr.get("town") or addr.get("village") or ""
+    state = addr.get("state") or addr.get("province") or ""
+    country = addr.get("country") or ""
+    display = ", ".join(filter(None, [city, state, country]))
+    return city, state, country, display
+
+
+def decimal_to_dms(deg: float) -> tuple:
+    """Convert decimal degrees to (deg, min, sec) as piexif rational tuples [(num,den)...]."""
+    deg = abs(deg)
+    d = int(deg)
+    m = int((deg - d) * 60)
+    s = (deg - d - m / 60) * 3600
+    # Encode seconds as rational with denominator 100 for 2 decimal places
+    return (d, 1), (m, 1), (round(s * 100), 100)
+
+
+def normalize_bbox(bbox: list, img_w: int, img_h: int) -> tuple:
+    """Convert pixel bbox [x1,y1,x2,y2] to MWG normalized (cx,cy,bw,bh) in [0..1]."""
+    x1, y1, x2, y2 = bbox
+    cx = (x1 + x2) / 2 / img_w
+    cy = (y1 + y2) / 2 / img_h
+    bw = (x2 - x1) / img_w
+    bh = (y2 - y1) / img_h
+    return cx, cy, bw, bh
+
