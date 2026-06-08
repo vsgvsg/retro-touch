@@ -51,6 +51,8 @@ def haversine(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
 def coalesce_location(lat: float, lng: float, cache: list, tolerance_m: float = 1000) -> dict | None:
     """Return first cache entry within tolerance_m of (lat, lng), or None."""
     for entry in cache:
+        if not isinstance(entry, dict) or "lat" not in entry or "lng" not in entry:
+            continue
         if haversine(lat, lng, entry["lat"], entry["lng"]) <= tolerance_m:
             return entry
     return None
@@ -159,6 +161,11 @@ class NominatimClient:
 
     def reverse(self, lat: float, lng: float) -> dict | None:
         """Reverse-geocode (lat, lng); return result dict or None on failure."""
+        try:
+            lat = float(lat)
+            lng = float(lng)
+        except (TypeError, ValueError):
+            return None
         if not (-90.0 <= lat <= 90.0) or not (-180.0 <= lng <= 180.0):
             return None
         params = urllib.parse.urlencode({"lat": lat, "lon": lng,
@@ -187,7 +194,8 @@ class LocationCache:
                 with open(self.path, encoding="utf-8") as f:
                     content = _json.load(f)
                     if isinstance(content, dict):
-                        self._data = content.get("locations", [])
+                        raw_locations = content.get("locations", [])
+                        self._data = raw_locations if isinstance(raw_locations, list) else []
                     else:
                         self._data = []
             except (FileNotFoundError, _json.JSONDecodeError):
@@ -212,7 +220,7 @@ class LocationCache:
         """Add or update a location entry; return the (possibly updated) entry."""
         existing = coalesce_location(lat, lng, self._data, self.TOLERANCE_M)
         if existing:
-            existing["use_count"] += 1
+            existing["use_count"] = existing.get("use_count", 1) + 1
             self._save()
             return existing
         entry = {"lat": lat, "lng": lng, "display_name": display_name,

@@ -397,6 +397,46 @@ def test_nominatim_client_reverse_coordinate_validation():
     assert client.reverse(45.0, 180.1) is None
     assert client.reverse(45.0, -180.1) is None
 
+def test_location_cache_invalid_locations_type(tmp_path):
+    from exif_pipeline import LocationCache
+    db_file = tmp_path / "locations.json"
+    
+    # Write JSON where "locations" is a string, not a list
+    with open(db_file, "w", encoding="utf-8") as f:
+        f.write('{"locations": "not-a-list"}')
+    
+    cache = LocationCache(path=db_file)
+    assert cache.all_entries() == []
+
+def test_coalesce_location_malformed_entries():
+    # cache contains a non-dict and dicts missing "lat"/"lng"
+    malformed_cache = [
+        "not-a-dict",
+        {"city": "Penza"}, # missing lat/lng
+        {"lat": 53.2007, "city": "Penza"}, # missing lng
+        {"lng": 45.0046, "city": "Penza"}, # missing lat
+        {"lat": 53.2007, "lng": 45.0046, "city": "Penza"}, # valid
+    ]
+    entry = ep.coalesce_location(53.2007, 45.0046, malformed_cache, tolerance_m=1000)
+    assert entry is not None
+    assert entry["city"] == "Penza"
+
+def test_nominatim_client_reverse_type_conversion(monkeypatch):
+    from exif_pipeline import NominatimClient
+    client = NominatimClient()
+    
+    def mock_get(url):
+        return {"address": {"city": "Penza"}}
+    monkeypatch.setattr(client, "_get", mock_get)
+    
+    # Strings representing valid coordinates should be parsed as float and succeed
+    res = client.reverse("53.2007", "45.0046")
+    assert res == {"address": {"city": "Penza"}}
+    
+    # Non-numeric string coordinates should return None
+    assert client.reverse("abc", "45.0046") is None
+
+
 
 
 
