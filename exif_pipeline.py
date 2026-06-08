@@ -75,7 +75,7 @@ def parse_nominatim_address(response: dict | None) -> tuple:
     addr = response.get("address", {})
     if not isinstance(addr, dict):
         addr = {}
-    city = addr.get("city") or addr.get("town") or addr.get("village") or ""
+    city = addr.get("city") or addr.get("town") or addr.get("village") or addr.get("hamlet") or addr.get("suburb") or addr.get("municipality") or ""
     state = addr.get("state") or addr.get("province") or ""
     country = addr.get("country") or ""
     display = ", ".join(filter(None, [city, state, country]))
@@ -137,11 +137,12 @@ class NominatimClient:
         elapsed = time.monotonic() - self._last
         if elapsed < 1.1:
             time.sleep(1.1 - elapsed)
-        req = urllib.request.Request(url, headers={"User-Agent": self.UA})
-        with urllib.request.urlopen(req, timeout=8) as r:
-            data = _json.loads(r.read())
-        self._last = time.monotonic()
-        return data
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": self.UA})
+            with urllib.request.urlopen(req, timeout=8) as r:
+                return _json.loads(r.read())
+        finally:
+            self._last = time.monotonic()
 
     def search(self, query: str) -> list:
         """Return list of Nominatim result dicts for query string."""
@@ -158,6 +159,8 @@ class NominatimClient:
 
     def reverse(self, lat: float, lng: float) -> dict | None:
         """Reverse-geocode (lat, lng); return result dict or None on failure."""
+        if not (-90.0 <= lat <= 90.0) or not (-180.0 <= lng <= 180.0):
+            return None
         params = urllib.parse.urlencode({"lat": lat, "lon": lng,
                                          "format": "json", "addressdetails": 1})
         try:
@@ -182,8 +185,12 @@ class LocationCache:
         if self.path.exists():
             try:
                 with open(self.path, encoding="utf-8") as f:
-                    self._data = _json.load(f).get("locations", [])
-            except (_json.JSONDecodeError, FileNotFoundError):
+                    content = _json.load(f)
+                    if isinstance(content, dict):
+                        self._data = content.get("locations", [])
+                    else:
+                        self._data = []
+            except (FileNotFoundError, _json.JSONDecodeError):
                 self._data = []
 
     def _save(self):
@@ -195,7 +202,7 @@ class LocationCache:
 
     def top(self, n: int = 8) -> list:
         """Return top-n entries by use_count."""
-        return sorted(self._data, key=lambda e: e["use_count"], reverse=True)[:n]
+        return sorted(self._data, key=lambda e: e.get("use_count", 1), reverse=True)[:n]
 
     def all_entries(self) -> list:
         return list(self._data)

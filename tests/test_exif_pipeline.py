@@ -276,6 +276,15 @@ def test_location_cache_recording(tmp_path):
     assert len(top_entries) == 1
     assert top_entries[0]["city"] == "Penza"
 
+    # Initialize second LocationCache and assert it correctly loads the newly recorded entries
+    cache2 = LocationCache(path=db_file)
+    entries2 = cache2.all_entries()
+    assert len(entries2) == 2
+    assert entries2[0]["city"] == "Penza"
+    assert entries2[0]["use_count"] == 2
+    assert entries2[1]["city"] == "Moscow"
+    assert entries2[1]["use_count"] == 1
+
 def test_location_cache_record_non_first_hit(tmp_path):
     from exif_pipeline import LocationCache
     db_file = tmp_path / "locations.json"
@@ -361,6 +370,32 @@ def test_nominatim_client_rate_limiting(monkeypatch):
     
     assert len(sleep_times) == 1
     assert sleep_times[0] == pytest.approx(0.6)
+
+def test_location_cache_non_dict_json(tmp_path):
+    from exif_pipeline import LocationCache
+    db_file = tmp_path / "locations.json"
+    
+    # Write non-dict JSON (array)
+    with open(db_file, "w", encoding="utf-8") as f:
+        f.write("[]")
+    cache = LocationCache(path=db_file)
+    assert cache.all_entries() == []
+    
+    # Write non-dict JSON (string)
+    with open(db_file, "w", encoding="utf-8") as f:
+        f.write('"abc"')
+    cache2 = LocationCache(path=db_file)
+    assert cache2.all_entries() == []
+
+def test_nominatim_client_reverse_coordinate_validation():
+    from exif_pipeline import NominatimClient
+    client = NominatimClient()
+    
+    # Invalid lat/lng should return None immediately without getting called
+    assert client.reverse(90.1, 100.0) is None
+    assert client.reverse(-90.1, 100.0) is None
+    assert client.reverse(45.0, 180.1) is None
+    assert client.reverse(45.0, -180.1) is None
 
 
 
