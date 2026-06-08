@@ -553,6 +553,45 @@ def test_write_exif_xmp(tmp_path):
     assert region_coords["Bob"] == (pytest.approx(0.6), pytest.approx(0.6), pytest.approx(0.2), pytest.approx(0.2))
 
 
+import tempfile, json, pathlib
+
+# --- sidecar helpers ---
+
+def test_load_sidecar_basic():
+    data = {"image": "test.jpg", "faces": [], "image_size": [100, 100]}
+    with tempfile.NamedTemporaryFile(suffix=".json", mode="w", delete=False) as f:
+        json.dump(data, f)
+        fname = f.name
+    loaded = ep.load_sidecar(fname)
+    assert loaded["image"] == "test.jpg"
+    pathlib.Path(fname).unlink()
+
+def test_load_sidecar_missing():
+    loaded = ep.load_sidecar("/nonexistent/path.json")
+    assert loaded is None
+
+def test_save_sidecar_roundtrip():
+    data = {"image": "test.jpg", "faces": [], "image_size": [100, 100],
+            "taken": {"year": 1960, "source": "manual"}}
+    with tempfile.TemporaryDirectory() as d:
+        path = pathlib.Path(d) / "test.faces.json"
+        ep.save_sidecar(str(path), data)
+        loaded = ep.load_sidecar(str(path))
+        assert loaded["taken"]["year"] == 1960
+
+def test_sidecar_tagged_true():
+    data = {"taken": {"year": 1960}, "location": {"lat": 53.2, "lng": 45.0}}
+    assert ep.sidecar_is_tagged(data) is True
+
+def test_sidecar_tagged_false_no_location():
+    data = {"taken": {"year": 1960}}
+    assert ep.sidecar_is_tagged(data) is False
+
+def test_sidecar_tagged_false_empty():
+    assert ep.sidecar_is_tagged({}) is False
+
+
+
 
 
 

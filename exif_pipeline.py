@@ -377,3 +377,25 @@ def write_exif_xmp(jpg_path: str, taken: dict, location: dict, faces: list,
         print(f"[exif] write failed for {jpg_path}: {e}")
         return False
 
+
+def load_sidecar(path: str) -> dict | None:
+    """Load a .faces.json sidecar; return None if not found."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            return _json.load(f)
+    except (FileNotFoundError, _json.JSONDecodeError):
+        return None
+
+
+def save_sidecar(path: str, data: dict) -> None:
+    """Write sidecar dict to path as formatted JSON."""
+    with open(path, "w", encoding="utf-8") as f:
+        _json.dump(data, f, indent=2, ensure_ascii=False)
+
+
+def sidecar_is_tagged(data: dict) -> bool:
+    """Return True if the sidecar has both taken.year and location.lat."""
+    return bool(data.get("taken", {}).get("year") and
+                data.get("location", {}).get("lat") is not None)
+
+
