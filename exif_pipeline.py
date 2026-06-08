@@ -7,6 +7,13 @@ Commands:
 """
 import re
 import math
+import os
+import time
+import pathlib
+import urllib.request
+import urllib.parse
+import json as _json
+
 
 # ---------------------------------------------------------------------------
 # Pure helpers (TDD-tested)
@@ -116,11 +123,6 @@ def normalize_bbox(bbox: list, img_w: int, img_h: int) -> tuple:
     return cx, cy, bw, bh
 
 
-import time
-import urllib.request
-import urllib.parse
-import json as _json
-
 class NominatimClient:
     """Thin Nominatim geocoder — enforces 1.1 s between requests, caches by query."""
 
@@ -147,7 +149,10 @@ class NominatimClient:
             return self._cache[query]
         params = urllib.parse.urlencode({"q": query, "format": "json",
                                          "addressdetails": 1, "limit": 5})
-        results = self._get(f"{self.BASE}/search?{params}")
+        try:
+            results = self._get(f"{self.BASE}/search?{params}")
+        except Exception:
+            return []
         self._cache[query] = results
         return results
 
@@ -160,8 +165,6 @@ class NominatimClient:
         except Exception:
             return None
 
-
-import pathlib
 
 LOCATIONS_PATH = pathlib.Path("extracted/locations.json")
 
@@ -177,13 +180,18 @@ class LocationCache:
 
     def _load(self):
         if self.path.exists():
-            with open(self.path) as f:
-                self._data = _json.load(f).get("locations", [])
+            try:
+                with open(self.path, encoding="utf-8") as f:
+                    self._data = _json.load(f).get("locations", [])
+            except (_json.JSONDecodeError, FileNotFoundError):
+                self._data = []
 
     def _save(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.path, "w") as f:
+        tmp_path = self.path.with_suffix(self.path.suffix + ".tmp")
+        with open(tmp_path, "w", encoding="utf-8") as f:
             _json.dump({"locations": self._data}, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, self.path)
 
     def top(self, n: int = 8) -> list:
         """Return top-n entries by use_count."""

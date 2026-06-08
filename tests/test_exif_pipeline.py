@@ -300,6 +300,69 @@ def test_location_cache_record_non_first_hit(tmp_path):
     assert entries[1]["city"] == "Orenburg"
     assert entries[1]["use_count"] == 2
 
+def test_nominatim_client_search_error_handling(monkeypatch):
+    from exif_pipeline import NominatimClient
+    client = NominatimClient()
+    
+    def mock_get_fail(url):
+        raise OSError("Connection timed out")
+        
+    monkeypatch.setattr(client, "_get", mock_get_fail)
+    
+    # search() should swallow the error and return []
+    res = client.search("Some Query")
+    assert res == []
+
+def test_location_cache_corrupted_json(tmp_path):
+    from exif_pipeline import LocationCache
+    db_file = tmp_path / "locations.json"
+    
+    # Write corrupted/invalid JSON
+    with open(db_file, "w", encoding="utf-8") as f:
+        f.write("{invalid json...")
+        
+    cache = LocationCache(path=db_file)
+    # It should fall back to empty list on JSONDecodeError
+    assert cache.all_entries() == []
+
+class DummyResponse:
+    def read(self):
+        return b"[]"
+    def __enter__(self):
+        return self
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        pass
+
+def test_nominatim_client_rate_limiting(monkeypatch):
+    import time
+    import urllib.request
+    from exif_pipeline import NominatimClient
+    client = NominatimClient()
+    
+    # Mock urlopen
+    def mock_urlopen(req, timeout=None):
+        return DummyResponse()
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+    
+    # Control monotonic time
+    t_values = [100.0, 100.5, 101.0, 101.0]
+    def mock_monotonic():
+        return t_values.pop(0) if t_values else 200.0
+    monkeypatch.setattr(time, "monotonic", mock_monotonic)
+    
+    sleep_times = []
+    monkeypatch.setattr(time, "sleep", sleep_times.append)
+    
+    # First request
+    client._get("https://nominatim.openstreetmap.org/search?q=1")
+    
+    # Second request (elapsed is 0.5s, should sleep 0.6s)
+    client._get("https://nominatim.openstreetmap.org/search?q=2")
+    
+    assert len(sleep_times) == 1
+    assert sleep_times[0] == pytest.approx(0.6)
+
+
 
 
 
