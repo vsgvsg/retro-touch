@@ -654,6 +654,63 @@ def test_cmd_tag():
     assert "GUI not yet implemented" in str(exc_info.value)
 
 
+def test_theme_helpers_and_photo_loader(tmp_path):
+    from exif_pipeline import (
+        ACCENT, BG, SURFACE, TEXT, MUTED, GREEN, AMBER, RED, STATE_COLORS,
+        _install_theme, load_photo_image
+    )
+    assert ACCENT == "#5e9cf5"
+    assert BG == "#1e1e2e"
+    assert STATE_COLORS["tagged"] == GREEN
+
+    # Test _install_theme
+    import tkinter as tk
+    from tkinter import ttk
+    root = tk.Tk()
+    try:
+        _install_theme(root)
+        # Check that root bg is updated
+        assert root.cget("bg") == BG
+        # Check active button style mapping for foreground contrast
+        style = ttk.Style(root)
+        assert style.map("TButton", "foreground") == [("active", BG)]
+        assert style.map("Accent.TButton", "foreground") == [("active", BG)]
+    finally:
+        root.destroy()
+
+    # Test load_photo_image with a non-existent file (returns None)
+    assert load_photo_image("non_existent_file.jpg") is None
+
+    # Test load_photo_image with a real image (constrained by height)
+    from PIL import Image
+    test_img = tmp_path / "test_img.jpg"
+    img = Image.new("RGB", (100, 200), color="red")
+    img.save(test_img, "JPEG")
+    
+    # We need tk root active to create PhotoImage
+    root2 = tk.Tk()
+    try:
+        photo = load_photo_image(str(test_img), max_height=100, max_width=500)
+        assert photo is not None
+        # Width/height should be scaled (original height 200 -> max_height 100, so scale is 0.5, width becomes 50)
+        assert photo.height() == 100
+        assert photo.width() == 50
+
+        # Test load_photo_image with a wide image (constrained by width)
+        test_img_wide = tmp_path / "test_img_wide.jpg"
+        img_wide = Image.new("RGB", (1000, 200), color="blue")
+        img_wide.save(test_img_wide, "JPEG")
+        # default max_width = 560, max_height = 680
+        photo_wide = load_photo_image(str(test_img_wide))
+        assert photo_wide is not None
+        assert photo_wide.width() == 560
+        assert photo_wide.height() == 112
+    finally:
+        root2.destroy()
+
+
+
+
 
 
 

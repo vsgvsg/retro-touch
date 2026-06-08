@@ -17,8 +17,11 @@ import json as _json
 import shutil
 import piexif
 import piexif.helper
-from PIL import Image
+from PIL import Image, ImageTk
 from libxmp import XMPFiles, XMPMeta, XMPError
+import tkinter as tk
+from tkinter import ttk
+import threading
 
 
 
@@ -438,6 +441,54 @@ def cmd_report(extracted_dir: str = "extracted") -> None:
     print(f"  {exif_written:4d} EXIF written to jpg        {exif_written*100//max(total,1):3d}%")
     print(f"  {sidecar_only:4d} tagged sidecar only        {sidecar_only*100//max(total,1):3d}%")
     print(f"  {untagged:4d} untagged                   {untagged*100//max(total,1):3d}%")
+
+# ── Shared theme (copied from face_pipeline.py — no cross-import) ──────────
+ACCENT   = "#5e9cf5"
+BG       = "#1e1e2e"
+SURFACE  = "#2a2a3d"
+TEXT     = "#cdd6f4"
+MUTED    = "#6c7086"
+GREEN    = "#a6e3a1"
+AMBER    = "#f9e2af"
+RED      = "#f38ba8"
+STATE_COLORS = {"tagged": GREEN, "current": ACCENT, "skipped": MUTED, "default": SURFACE}
+
+
+def _install_theme(root: tk.Tk) -> None:
+    """Configure ttk clam theme with RetroTouch color palette."""
+    root.configure(bg=BG)
+    style = ttk.Style(root)
+    try:
+        style.theme_use("clam")
+    except tk.TclError:
+        pass
+    style.configure(".", background=BG, foreground=TEXT, fieldbackground=SURFACE,
+                    font=("Helvetica", 12))
+    style.configure("TButton", background=SURFACE, foreground=TEXT, padding=6)
+    style.map("TButton", background=[("active", ACCENT)], foreground=[("active", BG)])
+    style.configure("Accent.TButton", background=ACCENT, foreground=BG)
+    style.map("Accent.TButton", background=[("active", "#4a8ae8")], foreground=[("active", BG)])
+    style.configure("TLabel", background=BG, foreground=TEXT)
+    style.configure("TFrame", background=BG)
+    style.configure("TEntry", fieldbackground=SURFACE, foreground=TEXT)
+    style.configure("TCombobox", fieldbackground=SURFACE, foreground=TEXT)
+    style.configure("TSpinbox", fieldbackground=SURFACE, foreground=TEXT)
+    style.configure("Horizontal.TProgressbar", background=ACCENT, troughcolor=SURFACE)
+
+
+def load_photo_image(jpg_path: str, max_height: int = 680, max_width: int = 560) -> tk.PhotoImage | None:
+    """Load a JPG and return a tk.PhotoImage scaled to max_height and max_width. Returns None on error."""
+    try:
+        img = Image.open(jpg_path)
+        w, h = img.size
+        scale = 1.0
+        if w > max_width or h > max_height:
+            scale = min(max_width / w, max_height / h)
+            img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+        return ImageTk.PhotoImage(img)
+    except Exception as e:
+        print(f"[photo] load error {jpg_path}: {e}")
+        return None
 
 
 def cmd_tag():
