@@ -590,6 +590,23 @@ def test_sidecar_tagged_false_no_location():
 def test_sidecar_tagged_false_empty():
     assert ep.sidecar_is_tagged({}) is False
 
+def test_sidecar_tagged_none_values():
+    data1 = {"taken": None, "location": {"lat": 53.2, "lng": 45.0}}
+    data2 = {"taken": {"year": 1960}, "location": None}
+    data3 = None
+    assert ep.sidecar_is_tagged(data1) is False
+    assert ep.sidecar_is_tagged(data2) is False
+    assert ep.sidecar_is_tagged(data3) is False
+
+def test_load_sidecar_non_dict():
+    with tempfile.NamedTemporaryFile(suffix=".json", mode="w", delete=False) as f:
+        json.dump([1, 2, 3], f)
+        fname = f.name
+    loaded = ep.load_sidecar(fname)
+    assert loaded is None
+    pathlib.Path(fname).unlink()
+
+
 
 
 

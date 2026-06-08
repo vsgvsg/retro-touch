@@ -379,23 +379,40 @@ def write_exif_xmp(jpg_path: str, taken: dict, location: dict, faces: list,
 
 
 def load_sidecar(path: str) -> dict | None:
-    """Load a .faces.json sidecar; return None if not found."""
+    """Load a .faces.json sidecar; return None if not found or malformed."""
     try:
         with open(path, encoding="utf-8") as f:
-            return _json.load(f)
-    except (FileNotFoundError, _json.JSONDecodeError):
+            content = _json.load(f)
+            return content if isinstance(content, dict) else None
+    except (OSError, _json.JSONDecodeError):
         return None
 
 
 def save_sidecar(path: str, data: dict) -> None:
-    """Write sidecar dict to path as formatted JSON."""
-    with open(path, "w", encoding="utf-8") as f:
-        _json.dump(data, f, indent=2, ensure_ascii=False)
+    """Write sidecar dict to path as formatted JSON safely using atomic replacement."""
+    tmp_path = path + ".tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            _json.dump(data, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, path)
+    except Exception as e:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise e
 
 
 def sidecar_is_tagged(data: dict) -> bool:
     """Return True if the sidecar has both taken.year and location.lat."""
-    return bool(data.get("taken", {}).get("year") and
-                data.get("location", {}).get("lat") is not None)
+    if not isinstance(data, dict):
+        return False
+    taken = data.get("taken")
+    location = data.get("location")
+    
+    has_year = isinstance(taken, dict) and bool(taken.get("year"))
+    has_lat = isinstance(location, dict) and location.get("lat") is not None
+    return has_year and has_lat
+
 
 
