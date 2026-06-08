@@ -5,6 +5,7 @@ Commands:
     python exif_pipeline.py tag      # interactive tagging GUI
     python exif_pipeline.py report   # coverage stats (read-only)
 """
+import sys
 import re
 import math
 import os
@@ -413,6 +414,46 @@ def sidecar_is_tagged(data: dict) -> bool:
     has_year = isinstance(taken, dict) and bool(taken.get("year"))
     has_lat = isinstance(location, dict) and location.get("lat") is not None
     return has_year and has_lat
+
+
+def cmd_report(extracted_dir: str = "extracted") -> None:
+    """Print EXIF tagging coverage stats for all photos in extracted_dir."""
+    p = pathlib.Path(extracted_dir)
+    sidecars = sorted(p.glob("*.faces.json"))
+    total = len(sidecars)
+    tagged = 0
+    exif_written = 0
+    for sc in sidecars:
+        data = load_sidecar(str(sc))
+        if data is None:
+            continue
+        if sidecar_is_tagged(data):
+            tagged += 1
+        if data.get("exif_written"):
+            exif_written += 1
+    sidecar_only = tagged - exif_written
+    untagged = total - tagged
+    print(f"  {total:4d} photos total")
+    print(f"  {tagged:4d} tagged (date + location)   {tagged*100//max(total,1):3d}%")
+    print(f"  {exif_written:4d} EXIF written to jpg        {exif_written*100//max(total,1):3d}%")
+    print(f"  {sidecar_only:4d} tagged sidecar only        {sidecar_only*100//max(total,1):3d}%")
+    print(f"  {untagged:4d} untagged                   {untagged*100//max(total,1):3d}%")
+
+
+def cmd_tag():
+    raise NotImplementedError("GUI not yet implemented")
+
+
+if __name__ == "__main__":
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "tag"
+    if cmd == "report":
+        cmd_report()
+    elif cmd == "tag":
+        cmd_tag()
+    else:
+        print(f"Unknown command: {cmd}")
+        print("Usage: exif_pipeline.py [tag|report]")
+        sys.exit(1)
 
 
 

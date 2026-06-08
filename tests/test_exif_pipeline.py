@@ -607,6 +607,54 @@ def test_load_sidecar_non_dict():
     pathlib.Path(fname).unlink()
 
 
+def test_cmd_report(capsys, tmp_path):
+    # 1. Untagged sidecar
+    (tmp_path / "1.faces.json").write_text(json.dumps({"taken": None, "location": None}), encoding="utf-8")
+    
+    # 2. Tagged but not exif_written
+    (tmp_path / "2.faces.json").write_text(json.dumps({
+        "taken": {"year": 1990},
+        "location": {"lat": 1.0, "lng": 2.0}
+    }), encoding="utf-8")
+    
+    # 3. Tagged and exif_written
+    (tmp_path / "3.faces.json").write_text(json.dumps({
+        "taken": {"year": 1995},
+        "location": {"lat": 3.0, "lng": 4.0},
+        "exif_written": True
+    }), encoding="utf-8")
+    
+    # 4. Corrupted json
+    (tmp_path / "4.faces.json").write_text("invalid json", encoding="utf-8")
+    
+    # 5. Non-faces.json file (should be ignored)
+    (tmp_path / "other.json").write_text(json.dumps({}), encoding="utf-8")
+
+    ep.cmd_report(str(tmp_path))
+    
+    captured = capsys.readouterr()
+    out = captured.out
+    
+    # Expected output details:
+    # 4 sidecar files total
+    # 2 tagged (50%)
+    # 1 exif_written (25%)
+    # 1 sidecar_only (25%)
+    # 2 untagged (50%)
+    assert "4 photos total" in out
+    assert "2 tagged (date + location)    50%" in out
+    assert "1 EXIF written to jpg         25%" in out
+    assert "1 tagged sidecar only         25%" in out
+    assert "2 untagged                    50%" in out
+
+
+def test_cmd_tag():
+    with pytest.raises(NotImplementedError) as exc_info:
+        ep.cmd_tag()
+    assert "GUI not yet implemented" in str(exc_info.value)
+
+
+
 
 
 
