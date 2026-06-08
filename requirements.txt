@@ -9,5 +9,4 @@ replicate>=0.25
 tkintermapview>=1.29
 piexif>=1.1
 python-xmp-toolkit>=2.0
-requests>=2.31
 Pillow>=10.0
