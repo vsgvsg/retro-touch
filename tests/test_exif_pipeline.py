@@ -733,6 +733,167 @@ def test_theme_helpers_and_photo_loader(tmp_path):
         root2.destroy()
 
 
+# --- TaggerApp tests (Task 10) ---
+
+def test_tagger_app_photo_loading_and_autofill(tmp_path):
+    from PIL import Image
+    import json
+    
+    # 1. Create a dummy photo
+    jpg_path = tmp_path / "1990-penza-00001.jpg"
+    img = Image.new("RGB", (100, 100), color="red")
+    img.save(jpg_path, "JPEG")
+    
+    # 2. Write locations.json and sidecar faces.json
+    locs_file = tmp_path / "locations.json"
+    locs_file.write_text(json.dumps({"locations": []}), encoding="utf-8")
+    
+    sc_file = tmp_path / "1990-penza-00001.faces.json"
+    sc_data = {
+        "image": "1990-penza-00001.jpg",
+        "image_size": [100, 100],
+        "faces": [
+            {"bbox": [10, 10, 30, 30], "label": "Alice"}
+        ],
+        "taken": {"year": 1991, "month": 5},
+        "location": {
+            "lat": 53.2007,
+            "lng": 45.0046,
+            "city": "Penza",
+            "state": "Penza Oblast",
+            "country": "Russia",
+            "display_name": "Penza, Russia"
+        }
+    }
+    sc_file.write_text(json.dumps(sc_data), encoding="utf-8")
+    
+    # Mock search_and_fly and set_location to record calls
+    set_location_calls = []
+    def mock_set_location(lat, lng, city, state, country, display_name, fly=False):
+        set_location_calls.append((lat, lng, city, state, country, display_name, fly))
+        
+    # Instantiate TaggerApp
+    app = ep.TaggerApp([str(jpg_path)], extracted_dir=str(tmp_path))
+    try:
+        app._set_location = mock_set_location
+        # Manually load the photo (since it was loaded during __init__ with empty stubs, or let's just call it now)
+        app._load_photo(0)
+        
+        # Verify sidecar is loaded
+        assert app._sidecar["taken"]["year"] == 1991
+        
+        # Verify text/title variables
+        assert app._title_var.get() == "1990-penza-00001.jpg  1/1"
+        assert app._progress_var.get() == 0.0
+        
+        # Verify autofill dates
+        assert app._year_var.get() == "1991"
+        assert app._month_var.get() == "May"
+        
+        # Verify set_location was called from sidecar
+        assert len(set_location_calls) == 1
+        assert set_location_calls[0] == (53.2007, 45.0046, "Penza", "Penza Oblast", "Russia", "Penza, Russia", True)
+        
+    finally:
+        app.root.destroy()
+
+
+def test_tagger_app_autofill_filename_parsing(tmp_path):
+    from PIL import Image
+    import json
+    
+    # 1. Create a dummy photo
+    jpg_path = tmp_path / "1985-tbilisi-00002.jpg"
+    img = Image.new("RGB", (100, 100), color="blue")
+    img.save(jpg_path, "JPEG")
+    
+    # 2. Locations.json (empty)
+    locs_file = tmp_path / "locations.json"
+    locs_file.write_text(json.dumps({"locations": []}), encoding="utf-8")
+    
+    # Mock search_and_fly to record query
+    search_queries = []
+    def mock_search_and_fly(query):
+        search_queries.append(query)
+        
+    app = ep.TaggerApp([str(jpg_path)], extracted_dir=str(tmp_path))
+    try:
+        app._search_and_fly = mock_search_and_fly
+        app._load_photo(0)
+        
+        # Verify default sidecar structure
+        assert app._sidecar["image"] == "1985-tbilisi-00002.jpg"
+        assert app._sidecar["faces"] == []
+        
+        # Verify autofill parsed from filename
+        assert app._year_var.get() == "1985"
+        assert app._month_var.get() == ""
+        
+        # Verify _search_and_fly was triggered asynchronously
+        import time
+        start_t = time.time()
+        while not search_queries and time.time() - start_t < 1.0:
+            time.sleep(0.01)
+        assert "tbilisi" in search_queries
+        
+    finally:
+        app.root.destroy()
+
+
+def test_tagger_app_navigation(tmp_path):
+    from PIL import Image
+    import json
+    
+    # Create 3 dummy photos
+    jpgs = []
+    for i in range(1, 4):
+        jpg_path = tmp_path / f"1990-penza-0000{i}.jpg"
+        img = Image.new("RGB", (100, 100), color="red")
+        img.save(jpg_path, "JPEG")
+        jpgs.append(str(jpg_path))
+        
+    locs_file = tmp_path / "locations.json"
+    locs_file.write_text(json.dumps({"locations": []}), encoding="utf-8")
+    
+    app = ep.TaggerApp(jpgs, extracted_dir=str(tmp_path))
+    try:
+        app._load_photo(0)
+        assert app.idx == 0
+        
+        app._next()
+        assert app.idx == 1
+        assert "00002" in app._title_var.get()
+        
+        app._next()
+        assert app.idx == 2
+        assert "00003" in app._title_var.get()
+        
+        app._next()
+        assert app.idx == 0
+        assert "00001" in app._title_var.get()
+        
+        app._prev()
+        assert app.idx == 2
+        assert "00003" in app._title_var.get()
+        
+        # Mock event for _on_progress_click
+        class MockEvent:
+            def __init__(self, x):
+                self.x = x
+        
+        # If progress bar width is 100 pixels, and we click at x=70, frac = 0.7 -> idx = 2
+        app._progress_bar.winfo_width = lambda: 100
+        
+        app._on_progress_click(MockEvent(70))
+        assert app.idx == 2
+        
+        app._on_progress_click(MockEvent(10))
+        assert app.idx == 0
+    finally:
+        app.root.destroy()
+
+
+
 
 
 

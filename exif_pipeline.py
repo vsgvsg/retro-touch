@@ -635,6 +635,82 @@ class TaggerApp:
         pass
 
     def _load_photo(self, idx: int):
+        if not self.photos:
+            return
+        self.idx = idx % len(self.photos)
+        jpg = self.photos[self.idx]
+        stem = pathlib.Path(jpg).stem
+        self._title_var.set(f"{pathlib.Path(jpg).name}  {self.idx+1}/{len(self.photos)}")
+        self._progress_var.set(self.idx)
+
+        # Load sidecar
+        sc_path = str(self.extracted_dir / f"{stem}.faces.json")
+        self._sidecar = load_sidecar(sc_path) or {"image": pathlib.Path(jpg).name,
+                                                    "faces": [], "image_size": [1, 1]}
+
+        # Load photo image
+        self._photo_img = load_photo_image(jpg, max_height=680)
+        self._canvas.delete("all")
+        if self._photo_img:
+            self._canvas.create_image(0, 0, anchor="nw", image=self._photo_img)
+            self._canvas.configure(scrollregion=self._canvas.bbox("all"))
+            self._draw_faces()
+
+        # Auto-fill from sidecar or filename
+        self._autofill()
+
+    def _draw_faces(self):
+        """Overlay labeled face boxes on the canvas."""
+        if not self._photo_img:
+            return
+        img_w, img_h = self._sidecar.get("image_size", [1, 1])
+        disp_w = self._photo_img.width()
+        disp_h = self._photo_img.height()
+        sx = disp_w / img_w
+        sy = disp_h / img_h
+        for face in self._sidecar.get("faces", []):
+            label = face.get("label", "")
+            if not label:
+                continue
+            x1, y1, x2, y2 = face["bbox"]
+            self._canvas.create_rectangle(
+                x1*sx, y1*sy, x2*sx, y2*sy,
+                outline=ACCENT, width=2, tags="face"
+            )
+            self._canvas.create_text(
+                x1*sx + 4, y1*sy - 2, text=label,
+                anchor="sw", fill=ACCENT, font=("Helvetica", 10, "bold"), tags="face"
+            )
+
+    def _autofill(self):
+        """Pre-fill year/month and location from sidecar or filename."""
+        sc = self._sidecar
+        if sc.get("taken"):
+            self._year_var.set(str(sc["taken"]["year"]))
+            month = sc["taken"].get("month")
+            months = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+            self._month_var.set(months[month] if month else "")
+        else:
+            year, hint = parse_filename(pathlib.Path(self.photos[self.idx]).name)
+            self._year_var.set(str(year) if year else "")
+            self._month_var.set("")
+            if hint:
+                self._search_var.set(hint)
+                threading.Thread(target=self._search_and_fly,
+                                 args=(hint,), daemon=True).start()
+
+        if sc.get("location"):
+            loc = sc["location"]
+            self._set_location(loc["lat"], loc["lng"], loc["city"],
+                               loc.get("state", ""), loc["country"],
+                               loc["display_name"], fly=True)
+
+    def _search_and_fly(self, query: str):
+        pass
+
+    def _set_location(self, lat: float, lng: float, city: str, state: str,
+                      country: str, display_name: str, fly: bool = False):
         pass
 
     def _refresh_chips(self):
@@ -653,13 +729,16 @@ class TaggerApp:
         pass
 
     def _prev(self):
-        pass
+        self._load_photo(self.idx - 1)
 
     def _next(self):
-        pass
+        self._load_photo(self.idx + 1)
 
     def _on_progress_click(self, event):
-        pass
+        frac = event.x / self._progress_bar.winfo_width()
+        idx = int(frac * len(self.photos))
+        self._load_photo(max(0, min(idx, len(self.photos) - 1)))
+
 
 
 def cmd_tag(extracted_dir: str = "extracted") -> None:
