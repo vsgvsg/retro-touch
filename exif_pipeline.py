@@ -629,10 +629,76 @@ class TaggerApp:
     def run(self):
         self.root.mainloop()
 
-    # ── Stubs for future implementation ───────────────────────────────────
+    # ── Keyboard bindings ─────────────────────────────────────────────────
 
     def _bind_keys(self):
-        pass
+        months = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+        def on_key(event):
+            k = event.keysym
+            c = event.char
+            focused = self.root.focus_get()
+            in_entry = isinstance(focused, (ttk.Entry, tk.Entry))
+
+            if k == "Return" and not in_entry:
+                self._save_and_next()
+            elif k == "Escape":
+                self._next()
+            elif c == "[":
+                self._prev()
+            elif c == "]":
+                self._next()
+            elif c == "?" or k == "F1":
+                self._show_shortcuts()
+            elif not in_entry:
+                if k == "Left":
+                    yr = self._year_var.get()
+                    if yr.isdigit():
+                        self._year_var.set(str(int(yr) - 1))
+                elif k == "Right":
+                    yr = self._year_var.get()
+                    if yr.isdigit():
+                        self._year_var.set(str(int(yr) + 1))
+                elif k == "Up":
+                    cur = self._month_var.get()
+                    idx = months.index(cur) if cur in months else 0
+                    self._month_var.set(months[(idx + 1) % 13])
+                elif k == "Down":
+                    cur = self._month_var.get()
+                    idx = months.index(cur) if cur in months else 0
+                    self._month_var.set(months[(idx - 1) % 13])
+                elif c == "m":
+                    self._month_var.set("")
+                elif c == "t":
+                    self._search_entry.focus_set()
+
+        self.root.bind_all("<Key>", on_key)
+
+        # Tab: jump to search (prevent default focus traversal)
+        self._search_entry.bind("<Tab>", lambda e: (self._search_entry.focus_set(), "break"))
+
+    def _show_shortcuts(self):
+        win = tk.Toplevel(self.root, bg=BG)
+        win.title("Keyboard Shortcuts")
+        lines = [
+            ("←  /  →",    "Nudge year  −1 / +1"),
+            ("↑  /  ↓",    "Nudge month"),
+            ("m",           "Clear month"),
+            ("t",           "Focus location search"),
+            ("Enter",       "Save & Next"),
+            ("Esc",         "Skip (no save)"),
+            ("[  /  ]",     "Prev / Next photo"),
+            ("?  / F1",     "This help"),
+        ]
+        for key, desc in lines:
+            row = ttk.Frame(win)
+            row.pack(fill=tk.X, padx=16, pady=2)
+            ttk.Label(row, text=key, width=14, anchor="e",
+                      foreground=ACCENT).pack(side=tk.LEFT)
+            ttk.Label(row, text=desc).pack(side=tk.LEFT, padx=8)
+        win.bind("<Escape>", lambda e: win.destroy())
+        win.bind("<Key-Return>", lambda e: win.destroy())
 
     def _load_photo(self, idx: int):
         if not self.photos:
@@ -707,26 +773,122 @@ class TaggerApp:
                                loc["display_name"], fly=True)
 
     def _search_and_fly(self, query: str):
-        pass
+        results = self.nominatim.search(query)
+        if not results:
+            return
+        r = results[0]
+        lat = float(r["lat"])
+        lng = float(r["lon"])
+        city, state, country, display = parse_nominatim_address(r)
+        self.root.after(0, lambda: self._set_location(
+            lat, lng, city, state, country, display, fly=True))
 
     def _set_location(self, lat: float, lng: float, city: str, state: str,
                       country: str, display_name: str, fly: bool = False):
-        pass
+        self._lat, self._lng = lat, lng
+        self._city, self._state, self._country = city, state, country
+        self._display_name = display_name
+        self._loc_display.set(display_name)
+        if self._pin:
+            self._pin.delete()
+        self._pin = self._map.set_marker(lat, lng)
+        if fly:
+            self._map.set_position(lat, lng)
+            self._map.set_zoom(10)
 
     def _refresh_chips(self):
-        pass
+        for w in self._chips_frame.winfo_children():
+            w.destroy()
+        for entry in self.cache.top(8):
+            name = entry.get("city") or entry.get("display_name", "?")
+            btn = ttk.Button(self._chips_frame, text=name,
+                             command=lambda e=entry: self._apply_cache_entry(e))
+            btn.pack(side=tk.LEFT, padx=2, pady=2)
+
+    def _apply_cache_entry(self, entry: dict):
+        self._set_location(entry["lat"], entry["lng"], entry["city"],
+                           entry.get("state", ""), entry["country"],
+                           entry["display_name"], fly=True)
+        self._search_var.set(entry["display_name"])
 
     def _do_search(self):
-        pass
+        query = self._search_var.get().strip()
+        if len(query) >= 2:
+            threading.Thread(target=self._search_and_fly,
+                             args=(query,), daemon=True).start()
 
-    def _on_search_changed(self, *args):
-        pass
+    def _on_search_changed(self, *_):
+        if self._search_after_id:
+            self.root.after_cancel(self._search_after_id)
+        self._search_after_id = self.root.after(400, self._trigger_search)
+
+    def _trigger_search(self):
+        query = self._search_var.get().strip()
+        if len(query) >= 2:
+            threading.Thread(target=self._search_and_fly,
+                             args=(query,), daemon=True).start()
 
     def _on_map_click(self, coords):
-        pass
+        lat, lng = coords
+        if self._pin:
+            self._pin.delete()
+        self._pin = self._map.set_marker(lat, lng)
+        threading.Thread(target=self._reverse_geocode,
+                         args=(lat, lng), daemon=True).start()
+
+    def _reverse_geocode(self, lat: float, lng: float):
+        result = self.nominatim.reverse(lat, lng)
+        if result:
+            city, state, country, display = parse_nominatim_address(result)
+        else:
+            city = state = country = display = ""
+        self.root.after(0, lambda: self._set_location(
+            lat, lng, city, state, country, display, fly=False))
 
     def _save_and_next(self):
-        pass
+        year_str = self._year_var.get().strip()
+        if not year_str.isdigit():
+            return  # no year — don't save
+        year = int(year_str)
+
+        month_str = self._month_var.get()
+        months = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        month = months.index(month_str) if month_str in months[1:] else None
+
+        if self._lat is None:
+            return  # no location — don't save
+
+        # Update sidecar
+        sc = self._sidecar
+        sc["taken"] = format_taken(year, month)
+        sc["location"] = {
+            "lat": self._lat, "lng": self._lng,
+            "display_name": self._display_name,
+            "city": self._city, "state": self._state, "country": self._country,
+            "source": "manual",
+        }
+
+        # Write EXIF to jpg
+        jpg = self.photos[self.idx]
+        success = write_exif_xmp(
+            jpg, sc["taken"], sc["location"],
+            sc.get("faces", []), sc.get("image_size", [1, 1])
+        )
+        sc["exif_written"] = success
+
+        # Save sidecar
+        stem = pathlib.Path(jpg).stem
+        sc_path = str(self.extracted_dir / f"{stem}.faces.json")
+        save_sidecar(sc_path, sc)
+
+        # Update location cache
+        self.cache.record(self._lat, self._lng, self._city,
+                          self._state, self._country, self._display_name)
+        self._refresh_chips()
+
+        # Advance
+        self._load_photo(self.idx + 1)
 
     def _prev(self):
         self._load_photo(self.idx - 1)
