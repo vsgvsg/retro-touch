@@ -648,10 +648,34 @@ def test_cmd_report(capsys, tmp_path):
     assert "2 untagged                    50%" in out
 
 
-def test_cmd_tag():
-    with pytest.raises(NotImplementedError) as exc_info:
-        ep.cmd_tag()
-    assert "GUI not yet implemented" in str(exc_info.value)
+def test_cmd_tag(capsys, tmp_path, monkeypatch):
+    # Test case 1: empty directory
+    ep.cmd_tag(str(tmp_path))
+    captured = capsys.readouterr()
+    assert "No .jpg files found in" in captured.out
+
+    # Test case 2: directory with photos
+    (tmp_path / "photo1.jpg").write_text("", encoding="utf-8")
+    
+    app_inited = False
+    app_run_called = False
+    
+    class MockTaggerApp:
+        def __init__(self, photos, extracted_dir):
+            nonlocal app_inited
+            app_inited = True
+            assert len(photos) == 1
+            assert photos[0] == str(tmp_path / "photo1.jpg")
+            assert extracted_dir == str(tmp_path)
+            
+        def run(self):
+            nonlocal app_run_called
+            app_run_called = True
+            
+    monkeypatch.setattr(ep, "TaggerApp", MockTaggerApp)
+    ep.cmd_tag(str(tmp_path))
+    assert app_inited is True
+    assert app_run_called is True
 
 
 def test_theme_helpers_and_photo_loader(tmp_path):

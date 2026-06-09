@@ -491,8 +491,184 @@ def load_photo_image(jpg_path: str, max_height: int = 680, max_width: int = 560)
         return None
 
 
-def cmd_tag():
-    raise NotImplementedError("GUI not yet implemented")
+class TaggerApp:
+    """Interactive EXIF tagger — date + location per photo."""
+
+    def __init__(self, photos: list[str], extracted_dir: str = "extracted"):
+        """
+        Args:
+            photos: sorted list of absolute .jpg paths
+            extracted_dir: directory containing .faces.json sidecars and locations.json
+        """
+        self.photos = photos
+        self.extracted_dir = pathlib.Path(extracted_dir)
+        self.cache = LocationCache(self.extracted_dir / "locations.json")
+        self.nominatim = NominatimClient()
+        self.idx = 0               # current photo index
+        self._photo_img = None     # keep reference to avoid GC
+        self._pin = None           # current map marker
+
+        self.root = tk.Tk()
+        self.root.title("RetroTouch — EXIF Tagger")
+        self.root.configure(bg=BG)
+        _install_theme(self.root)
+        self._build_ui()
+        self._bind_keys()
+        self._load_photo(0)
+
+    # ── Build UI ──────────────────────────────────────────────────────────
+
+    def _build_ui(self):
+        self._build_header()
+        pane = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
+        pane.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
+        self._build_photo_panel(pane)
+        self._build_sidebar(pane)
+
+    def _build_header(self):
+        hdr = ttk.Frame(self.root)
+        hdr.pack(fill=tk.X, padx=8, pady=(8, 0))
+        ttk.Button(hdr, text="← Prev", command=self._prev).pack(side=tk.LEFT)
+        self._title_var = tk.StringVar()
+        ttk.Label(hdr, textvariable=self._title_var, font=("Helvetica", 13, "bold")
+                  ).pack(side=tk.LEFT, expand=True)
+        ttk.Button(hdr, text="Next →", command=self._next).pack(side=tk.RIGHT)
+        # Progress bar
+        self._progress_var = tk.DoubleVar(value=0)
+        pb = ttk.Progressbar(self.root, variable=self._progress_var,
+                             maximum=len(self.photos),
+                             style="Horizontal.TProgressbar")
+        pb.pack(fill=tk.X, padx=8, pady=4)
+        pb.bind("<Button-1>", self._on_progress_click)
+        self._progress_bar = pb
+
+    def _build_photo_panel(self, parent):
+        frame = ttk.Frame(parent, width=560)
+        parent.add(frame, weight=3)
+        self._canvas = tk.Canvas(frame, bg=BG, highlightthickness=0)
+        self._canvas.pack(fill=tk.BOTH, expand=True)
+
+    def _build_sidebar(self, parent):
+        import tkintermapview
+        sb = ttk.Frame(parent, width=380)
+        parent.add(sb, weight=2)
+
+        # ── DATE section ──
+        date_frame = ttk.LabelFrame(sb, text="Date", padding=8)
+        date_frame.pack(fill=tk.X, padx=8, pady=(8, 4))
+
+        row = ttk.Frame(date_frame)
+        row.pack(fill=tk.X)
+        ttk.Label(row, text="Year:").pack(side=tk.LEFT)
+        self._year_var = tk.StringVar(value="")
+        self._year_spin = ttk.Spinbox(row, from_=1850, to=2030,
+                                      textvariable=self._year_var, width=6)
+        self._year_spin.pack(side=tk.LEFT, padx=4)
+        ttk.Label(row, text="Month:").pack(side=tk.LEFT, padx=(12, 0))
+        months = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        self._month_var = tk.StringVar(value="")
+        self._month_combo = ttk.Combobox(row, textvariable=self._month_var,
+                                         values=months, width=5, state="readonly")
+        self._month_combo.pack(side=tk.LEFT, padx=4)
+
+        # ── LOCATION section ──
+        loc_frame = ttk.LabelFrame(sb, text="Location", padding=8)
+        loc_frame.pack(fill=tk.X, padx=8, pady=4)
+
+        self._search_var = tk.StringVar()
+        search_entry = ttk.Entry(loc_frame, textvariable=self._search_var)
+        search_entry.pack(fill=tk.X)
+        self._search_entry = search_entry
+        search_entry.bind("<Return>", lambda e: self._do_search())
+        self._search_var.trace_add("write", self._on_search_changed)
+
+        # Frequent chips frame
+        self._chips_frame = ttk.Frame(loc_frame)
+        self._chips_frame.pack(fill=tk.X, pady=(4, 0))
+        self._refresh_chips()
+
+        # Map widget
+        self._map = tkintermapview.TkinterMapView(loc_frame, width=360, height=260,
+                                                  corner_radius=0)
+        self._map.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
+        self._map.set_tile_server("https://tile.openstreetmap.org/{z}/{x}/{y}.png")
+        self._map.set_position(53.2007, 45.0046)  # default: Penza
+        self._map.set_zoom(6)
+        self._map.add_left_click_map_command(self._on_map_click)
+
+        # Location display label
+        self._loc_display = tk.StringVar(value="")
+        ttk.Label(loc_frame, textvariable=self._loc_display,
+                  foreground=MUTED, wraplength=340).pack(fill=tk.X, pady=(2, 0))
+
+        # Buttons
+        btn_row = ttk.Frame(sb)
+        btn_row.pack(fill=tk.X, padx=8, pady=8)
+        ttk.Button(btn_row, text="✓ Save & Next", style="Accent.TButton",
+                   command=self._save_and_next).pack(side=tk.LEFT, expand=True, fill=tk.X)
+        ttk.Button(btn_row, text="Skip →",
+                   command=self._next).pack(side=tk.RIGHT, padx=(4, 0))
+
+        # Internal location state
+        self._lat = None
+        self._lng = None
+        self._city = ""
+        self._state = ""
+        self._country = ""
+        self._display_name = ""
+        self._search_after_id = None
+
+    # ── Public entry point for wiring-error testing ───────────────────────
+
+    def _show(self):
+        """Run one event loop iteration (for GUI wiring tests)."""
+        self.root.update_idletasks()
+        self.root.update()
+
+    def run(self):
+        self.root.mainloop()
+
+    # ── Stubs for future implementation ───────────────────────────────────
+
+    def _bind_keys(self):
+        pass
+
+    def _load_photo(self, idx: int):
+        pass
+
+    def _refresh_chips(self):
+        pass
+
+    def _do_search(self):
+        pass
+
+    def _on_search_changed(self, *args):
+        pass
+
+    def _on_map_click(self, coords):
+        pass
+
+    def _save_and_next(self):
+        pass
+
+    def _prev(self):
+        pass
+
+    def _next(self):
+        pass
+
+    def _on_progress_click(self, event):
+        pass
+
+
+def cmd_tag(extracted_dir: str = "extracted") -> None:
+    photos = sorted(str(p) for p in pathlib.Path(extracted_dir).glob("*.jpg"))
+    if not photos:
+        print(f"No .jpg files found in {extracted_dir}/")
+        return
+    app = TaggerApp(photos, extracted_dir)
+    app.run()
 
 
 if __name__ == "__main__":
