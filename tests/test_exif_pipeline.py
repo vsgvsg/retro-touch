@@ -735,7 +735,7 @@ def test_theme_helpers_and_photo_loader(tmp_path):
 
 # --- TaggerApp tests (Task 10) ---
 
-def test_tagger_app_photo_loading_and_autofill(tmp_path):
+def test_tagger_app_photo_loading_and_autofill(tmp_path, monkeypatch):
     from PIL import Image
     import json
     
@@ -772,6 +772,9 @@ def test_tagger_app_photo_loading_and_autofill(tmp_path):
     def mock_set_location(lat, lng, city, state, country, display_name, fly=False):
         set_location_calls.append((lat, lng, city, state, country, display_name, fly))
         
+    # Mock NominatimClient._get to avoid network calls and rate-limit sleep
+    monkeypatch.setattr(ep.NominatimClient, "_get", lambda self, url: [])
+
     # Instantiate TaggerApp
     app = ep.TaggerApp([str(jpg_path)], extracted_dir=str(tmp_path))
     try:
@@ -795,10 +798,10 @@ def test_tagger_app_photo_loading_and_autofill(tmp_path):
         assert set_location_calls[0] == (53.2007, 45.0046, "Penza", "Penza Oblast", "Russia", "Penza, Russia", True)
         
     finally:
-        app.root.destroy()
+        app.destroy()
 
 
-def test_tagger_app_autofill_filename_parsing(tmp_path):
+def test_tagger_app_autofill_filename_parsing(tmp_path, monkeypatch):
     from PIL import Image
     import json
     
@@ -811,16 +814,19 @@ def test_tagger_app_autofill_filename_parsing(tmp_path):
     locs_file = tmp_path / "locations.json"
     locs_file.write_text(json.dumps({"locations": []}), encoding="utf-8")
     
-    # Mock search_and_fly to record query
+    # Mock NominatimClient._get to avoid network calls and rate-limit sleep
+    monkeypatch.setattr(ep.NominatimClient, "_get", lambda self, url: [])
+    
+    # Track search_and_fly calls
     search_queries = []
-    def mock_search_and_fly(query):
+    orig_search_and_fly = ep.TaggerApp._search_and_fly
+    def tracking_search_and_fly(self, query):
         search_queries.append(query)
-        
+        return orig_search_and_fly(self, query)
+    monkeypatch.setattr(ep.TaggerApp, "_search_and_fly", tracking_search_and_fly)
+
     app = ep.TaggerApp([str(jpg_path)], extracted_dir=str(tmp_path))
     try:
-        app._search_and_fly = mock_search_and_fly
-        app._load_photo(0)
-        
         # Verify default sidecar structure
         assert app._sidecar["image"] == "1985-tbilisi-00002.jpg"
         assert app._sidecar["faces"] == []
@@ -837,10 +843,10 @@ def test_tagger_app_autofill_filename_parsing(tmp_path):
         assert "tbilisi" in search_queries
         
     finally:
-        app.root.destroy()
+        app.destroy()
 
 
-def test_tagger_app_navigation(tmp_path):
+def test_tagger_app_navigation(tmp_path, monkeypatch):
     from PIL import Image
     import json
     
@@ -855,6 +861,9 @@ def test_tagger_app_navigation(tmp_path):
     locs_file = tmp_path / "locations.json"
     locs_file.write_text(json.dumps({"locations": []}), encoding="utf-8")
     
+    # Mock NominatimClient._get to avoid network calls and rate-limit sleep
+    monkeypatch.setattr(ep.NominatimClient, "_get", lambda self, url: [])
+
     app = ep.TaggerApp(jpgs, extracted_dir=str(tmp_path))
     try:
         app._load_photo(0)
@@ -890,7 +899,7 @@ def test_tagger_app_navigation(tmp_path):
         app._on_progress_click(MockEvent(10))
         assert app.idx == 0
     finally:
-        app.root.destroy()
+        app.destroy()
 
 
 

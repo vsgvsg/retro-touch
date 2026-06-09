@@ -62,6 +62,19 @@ The four are one-off tools; they never cross-import — the JSON and image artif
 - `--dry-run` prints the per-face plan (stage + chosen reference + reason) and writes nothing — use it to preview before spending API calls. Flags: `--age-window`, `--sharpness-thresh`, `--min-area`, `--provider replicate|fake`, `--out`.
 - Generative work runs on a cloud GPU (no CUDA on this M4): `ReplicateProvider` (default; needs `REPLICATE_API_TOKEN`) — its model slugs/input keys are the manual-verification surface and may need updating against the live Replicate pages. `FakeProvider` (echoes input, records calls) backs the tests and `--dry-run`. Pure helpers are TDD-tested; the provider, the buffalo_l age pass, and the GUIs are verified manually.
 
+## EXIF Pipeline (exif_pipeline.py)
+- `python exif_pipeline.py tag` - interactive GUI to tag each extracted photo with year (required), month (optional), and location (lat/lng + city/state/country). Auto-fills year and location from filename (e.g. `1960-penza-00004_04.jpg` → year=1960, map flies to Penza).
+- `python exif_pipeline.py report` - print tagging coverage stats (read-only).
+- Extends the existing `*.faces.json` sidecar with top-level `taken` and `location` keys; also writes EXIF DateTimeOriginal, GPS tags, IPTC Keywords (face names), and XMP MWG Regions (face rectangles) to the `.jpg` file.
+- Maintains `extracted/locations.json` — a cache of lat/lng → human name mappings with use counts. Entries within 1000m are coalesced. Top 8 by use count appear as quick-select chips above the map.
+- Map: `tkintermapview` (OpenStreetMap tiles). Geocoding: Nominatim (free, no API key, 1 req/sec rate limit enforced). EXIF: `piexif`. XMP: `python-xmp-toolkit` (requires `brew install exempi`).
+- Safe write: EXIF/XMP written to `.jpg.tmp`, verified with Pillow, then `os.replace()` — original never corrupted.
+- Sidecar `taken` dict: `{"year": 1960, "month": 4, "source": "manual"}` — `month` key omitted entirely when unknown.
+- Sidecar `location` dict: `{"lat": 53.2, "lng": 45.0, "display_name": "...", "city": "...", "state": "...", "country": "...", "source": "manual"}`.
+- `exif_written: true` added to sidecar after successful EXIF write.
+- Pure helpers TDD-tested: `parse_filename`, `haversine`, `coalesce_location`, `format_taken`, `parse_nominatim_address`, `decimal_to_dms`, `normalize_bbox`, `load_sidecar`, `save_sidecar`, `sidecar_is_tagged`.
+- GUI verified manually. System dependency: `brew install exempi` (for `python-xmp-toolkit`).
+
 ## Code conventions
 - One file per tool (`split_photos.py`, `face_pipeline.py`, `restore_photos.py`); they're one-off tools, not a package. Don't cross-import between them — pass data through the `extracted/` JSON artifacts.
 - Pure functions (detector, cropper, metadata I/O, geometry helpers) get TDD tests; the `Editor` HighGUI class is verified manually, not unit-tested.

@@ -507,13 +507,16 @@ class TaggerApp:
         self.idx = 0               # current photo index
         self._photo_img = None     # keep reference to avoid GC
         self._pin = None           # current map marker
+        self._bg_threads: list = []  # track background threads for clean teardown
 
         self.root = tk.Tk()
         self.root.title("RetroTouch — EXIF Tagger")
         self.root.configure(bg=BG)
         _install_theme(self.root)
+        self._destroyed = False
         self._build_ui()
         self._bind_keys()
+        self.root.protocol("WM_DELETE_WINDOW", self.destroy)
         self._load_photo(0)
 
     # ── Build UI ──────────────────────────────────────────────────────────
@@ -628,6 +631,35 @@ class TaggerApp:
 
     def run(self):
         self.root.mainloop()
+
+    def destroy(self):
+        """Mark destroyed and tear down the Tk root safely."""
+        self._destroyed = True
+        # Wait for background threads to finish (max 2s each for rate-limit sleep)
+        for t in self._bg_threads:
+            t.join(timeout=2.0)
+        self._bg_threads.clear()
+        try:
+            self.root.destroy()
+        except tk.TclError:
+            pass
+
+    def _safe_after(self, ms, func):
+        """Schedule func on the Tk event loop, silently ignoring if root is destroyed."""
+        if self._destroyed:
+            return
+        try:
+            self.root.after(ms, func)
+        except (tk.TclError, RuntimeError):
+            pass
+
+    def _bg_run(self, target, *args):
+        """Spawn a daemon thread, track it for clean teardown."""
+        # Clean up finished threads
+        self._bg_threads = [t for t in self._bg_threads if t.is_alive()]
+        t = threading.Thread(target=target, args=args, daemon=True)
+        self._bg_threads.append(t)
+        t.start()
 
     # ── Keyboard bindings ─────────────────────────────────────────────────
 
@@ -763,8 +795,7 @@ class TaggerApp:
             self._month_var.set("")
             if hint:
                 self._search_var.set(hint)
-                threading.Thread(target=self._search_and_fly,
-                                 args=(hint,), daemon=True).start()
+                self._bg_run(self._search_and_fly, hint)
 
         if sc.get("location"):
             loc = sc["location"]
@@ -773,14 +804,16 @@ class TaggerApp:
                                loc["display_name"], fly=True)
 
     def _search_and_fly(self, query: str):
+        if self._destroyed:
+            return
         results = self.nominatim.search(query)
-        if not results:
+        if not results or self._destroyed:
             return
         r = results[0]
         lat = float(r["lat"])
         lng = float(r["lon"])
         city, state, country, display = parse_nominatim_address(r)
-        self.root.after(0, lambda: self._set_location(
+        self._safe_after(0, lambda: self._set_location(
             lat, lng, city, state, country, display, fly=True))
 
     def _set_location(self, lat: float, lng: float, city: str, state: str,
@@ -814,8 +847,7 @@ class TaggerApp:
     def _do_search(self):
         query = self._search_var.get().strip()
         if len(query) >= 2:
-            threading.Thread(target=self._search_and_fly,
-                             args=(query,), daemon=True).start()
+            self._bg_run(self._search_and_fly, query)
 
     def _on_search_changed(self, *_):
         if self._search_after_id:
@@ -825,24 +857,24 @@ class TaggerApp:
     def _trigger_search(self):
         query = self._search_var.get().strip()
         if len(query) >= 2:
-            threading.Thread(target=self._search_and_fly,
-                             args=(query,), daemon=True).start()
+            self._bg_run(self._search_and_fly, query)
 
     def _on_map_click(self, coords):
         lat, lng = coords
         if self._pin:
             self._pin.delete()
         self._pin = self._map.set_marker(lat, lng)
-        threading.Thread(target=self._reverse_geocode,
-                         args=(lat, lng), daemon=True).start()
+        self._bg_run(self._reverse_geocode, lat, lng)
 
     def _reverse_geocode(self, lat: float, lng: float):
+        if self._destroyed:
+            return
         result = self.nominatim.reverse(lat, lng)
         if result:
             city, state, country, display = parse_nominatim_address(result)
         else:
             city = state = country = display = ""
-        self.root.after(0, lambda: self._set_location(
+        self._safe_after(0, lambda: self._set_location(
             lat, lng, city, state, country, display, fly=False))
 
     def _save_and_next(self):
