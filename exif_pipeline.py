@@ -602,6 +602,34 @@ class TaggerApp:
         self._map.set_zoom(6)
         self._map.add_left_click_map_command(self._on_map_click)
 
+        # Custom macOS scroll-zoom fix
+        def custom_mouse_zoom(event):
+            relative_mouse_x = event.x / self._map.width
+            relative_mouse_y = event.y / self._map.height
+            
+            raw_delta = event.delta
+            if sys.platform == "darwin":
+                if abs(raw_delta) >= 120:
+                    step = raw_delta / 120.0
+                else:
+                    step = raw_delta * 0.2
+            elif sys.platform.startswith("win"):
+                step = raw_delta * 0.01
+            elif event.num == 4:
+                step = 1.0
+            elif event.num == 5:
+                step = -1.0
+            else:
+                step = raw_delta * 0.1
+                
+            new_zoom = self._map.zoom + step
+            self._map.set_zoom(new_zoom, relative_pointer_x=relative_mouse_x, relative_pointer_y=relative_mouse_y)
+
+        self._map._custom_mouse_zoom = custom_mouse_zoom
+        self._map.canvas.bind("<MouseWheel>", custom_mouse_zoom)
+        self._map.canvas.bind("<Button-4>", custom_mouse_zoom)
+        self._map.canvas.bind("<Button-5>", custom_mouse_zoom)
+
         # Location display label
         self._loc_display = tk.StringVar(value="")
         ttk.Label(loc_frame, textvariable=self._loc_display,
