@@ -65,9 +65,14 @@ The four are one-off tools; they never cross-import — the JSON and image artif
 ## EXIF Pipeline (exif_pipeline.py)
 - `python exif_pipeline.py tag` - interactive GUI to tag each extracted photo with year (required), month (optional), and location (lat/lng + city/state/country). Auto-fills year and location from filename (e.g. `1960-penza-00004_04.jpg` → year=1960, map flies to Penza).
 - `python exif_pipeline.py report` - print tagging coverage stats (read-only).
+- Date Propagation: Successfully saving a photo with a manually entered year and optional month propagates those values as the default year/month for the next untagged photo.
+- Shortcuts Button: A small `?` button next to "Skip →" in the sidebar bottom row opens the keyboard shortcuts helper window.
+- Map Layout & Zoom:
+  - The map is `360`px high by default and is configured with vertical and horizontal expansion (`fill=tk.BOTH, expand=True`) to grow when the window is resized.
+  - macOS Zoom Fix: Custom event bindings on the canvas normalize standard mouse wheel zoom (`abs(delta) >= 120` delta divided by `120.0` to change zoom by exactly 1 level), while preserving the default library handling for trackpads and Apple Magic Mouse.
 - Extends the existing `*.faces.json` sidecar with top-level `taken` and `location` keys; also writes EXIF DateTimeOriginal, GPS tags, IPTC Keywords (face names), and XMP MWG Regions (face rectangles) to the `.jpg` file.
 - Maintains `extracted/locations.json` — a cache of lat/lng → human name mappings with use counts. Entries within 1000m are coalesced. Top 8 by use count appear as quick-select chips above the map.
-- Map: `tkintermapview` (OpenStreetMap tiles). Geocoding: Nominatim (free, no API key, 1 req/sec rate limit enforced). EXIF: `piexif`. XMP: `python-xmp-toolkit` (requires `brew install exempi`).
+- Map: `tkintermapview` (OpenStreetMap tiles). Geocoding: Nominatim (free, no API key, 1 req/sec rate limit enforced, limit increased to `10` candidates to find smaller cities, and `accept-language=en` set to fetch geocoding results in English). EXIF: `piexif`. XMP: `python-xmp-toolkit` (requires `brew install exempi`).
 - Safe write: EXIF/XMP written to `.jpg.tmp`, verified with Pillow, then `os.replace()` — original never corrupted.
 - Sidecar `taken` dict: `{"year": 1960, "month": 4, "source": "manual"}` — `month` key omitted entirely when unknown.
 - Sidecar `location` dict: `{"lat": 53.2, "lng": 45.0, "display_name": "...", "city": "...", "state": "...", "country": "...", "source": "manual"}`.
