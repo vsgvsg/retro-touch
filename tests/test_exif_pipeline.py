@@ -1027,6 +1027,7 @@ def test_tagger_app_map_scroll_zoom(tmp_path, monkeypatch):
     from PIL import Image
     import json
     import sys
+    import time
     
     jpg_path = tmp_path / "1990-penza-00001.jpg"
     img = Image.new("RGB", (100, 100), color="red")
@@ -1057,7 +1058,7 @@ def test_tagger_app_map_scroll_zoom(tmp_path, monkeypatch):
                 self.y = y
                 self.num = num
                 
-        # Simulate standard mouse wheel scroll event on mac (delta=120)
+        # 1. First scroll event (standard mouse wheel, delta=120)
         app._map._custom_mouse_zoom(MockEvent(120, 180, 180))
         
         # Verify standard mouse wheel zoom changes zoom by exactly 1 level
@@ -1065,15 +1066,23 @@ def test_tagger_app_map_scroll_zoom(tmp_path, monkeypatch):
             assert len(zoom_calls) == 1
             assert abs(zoom_calls[0] - 11.0) < 0.001
             
+        # 2. Immediate second scroll event (delta=120) -> should be throttled/ignored
+        app._map._custom_mouse_zoom(MockEvent(120, 180, 180))
+        if sys.platform == "darwin":
+            assert len(zoom_calls) == 1  # Still only 1 call
+            
+        # 3. Bypass cooldown using monkeypatch on time.time
         zoom_calls.clear()
+        current_time = time.time()
+        monkeypatch.setattr(time, "time", lambda: current_time + 1.0)
         
         # Simulate Magic Mouse/Trackpad scroll event (delta=1)
         app._map._custom_mouse_zoom(MockEvent(1, 180, 180))
         
-        # Verify magic mouse zoom changes zoom by 0.2 levels
+        # Verify magic mouse zoom changes zoom by exactly 1.0 level as well
         if sys.platform == "darwin":
             assert len(zoom_calls) == 1
-            assert abs(zoom_calls[0] - 10.2) < 0.001
+            assert abs(zoom_calls[0] - 11.0) < 0.001
     finally:
         app.destroy()
 
