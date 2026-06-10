@@ -1,23 +1,30 @@
-# Design Spec: Map Scroll Zoom Improvements for macOS
+# Design Spec: Map Scroll Zoom Improvements for macOS (Throttled Zoom)
 
 ## Goal
 Fix map scrolling zoom behavior in `exif_pipeline.py` when running on macOS. Prevent the map from jumping between minimum and maximum zoom in one scroll tick (standard mouse wheel) and make it responsive to trackpads and Apple Magic Mouse.
 
 ---
 
-## 1. Issue Diagnosis
+## 1. Diagnostics & Refinement
 In the `tkintermapview` library:
 - A multiplier of `0.1` is applied directly to `event.delta`.
-- On macOS, a standard mouse wheel scroll tick returns `event.delta = 120` or `-120`, resulting in a sudden change of `12` zoom levels.
-- Trackpads and Magic Mouse return small delta values like `1` or `-1`, resulting in a tiny change of `0.1` zoom levels, which is ignored by the map widget's integer-rounding draw code.
+- Standard scroll wheel sends `delta = 120`, changing zoom by `12` levels.
+- Apple Magic Mouse sends very small delta values (like `1` or `2`), changing zoom by `0.1` or `0.2` levels, which doesn't cross integer rounding boundaries and gets ignored.
+
+Rather than scaling delta values (which can vary wildly across different mouse devices and OS configurations), we will use a time-based throttling mechanism:
+- Ignore any scroll events where the time since the last registered zoom is less than `0.15` seconds (150ms cooldown).
+- Zoom in by exactly `+1.0` if `delta > 0`, and zoom out by `-1.0` if `delta < 0`.
 
 ---
 
-## 2. Solution: Canvas Re-binding
+## 2. Solution: Canvas Re-binding and Cooldown
 We will intercept the mouse wheel events on the map's canvas component (`self._map.canvas`) and bind them to a custom `custom_mouse_zoom` method:
-- Standard scroll wheel events (`abs(delta) >= 120`) will be normalized by dividing by `120.0` (changing zoom by exactly `1.0` level per tick).
-- Small scroll gesture events (`abs(delta) < 120` on macOS) will be scaled using a multiplier of `0.2` to provide a smooth, responsive zoom curve for Magic Mouse/Trackpads.
-- Bind the custom zoom function to `<MouseWheel>`, `<Button-4>`, and `<Button-5>` on the `self._map.canvas` widget.
+- Initialize `self._last_scroll_time = 0.0` in `TaggerApp.__init__`.
+- In `custom_mouse_zoom(event)`, check `time.time() - self._last_scroll_time < 0.15`. If true, return.
+- Check `event.delta`. If `0`, return.
+- Set `step = 1.0 if event.delta > 0 else -1.0`.
+- Update `self._last_scroll_time = time.time()`.
+- Call `self._map.set_zoom(self._map.zoom + step, ...)`.
 
 ---
 
@@ -25,7 +32,7 @@ We will intercept the mouse wheel events on the map's canvas component (`self._m
 - Add a new unit test `test_tagger_app_map_scroll_zoom` that:
   - Instantiates `TaggerApp`.
   - Mocks `self._map.set_zoom` to record calls.
-  - Simulates a standard mouse wheel scroll event (`delta = 120`).
-  - Simulates a Magic Mouse scroll event (`delta = 1`).
-  - Verifies that the correct relative zoom levels are passed to `set_zoom`.
+  - Simulates a scroll event (`delta = 120`).
+  - Simulates another scroll event immediately (`delta = 120`) and verifies it is ignored due to the cooldown.
+  - Mocks time to bypass the cooldown, simulates a Magic Mouse scroll event (`delta = 1`), and verifies it zooms by exactly `1.0`.
 - Run the full test suite (`python -m pytest tests/test_exif_pipeline.py`).
