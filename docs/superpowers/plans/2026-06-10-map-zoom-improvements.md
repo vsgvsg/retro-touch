@@ -1,10 +1,10 @@
-# Map Zoom macOS Compatibility Fix Implementation Plan
+# Map Zoom macOS Compatibility Fix Implementation Plan (Throttled Zoom)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Fix macOS scrolling zoom on the map widget, preventing excessive zoom jumps on standard scroll wheels and enabling responsiveness for Apple Magic Mouse and trackpads.
+**Goal:** Fix macOS scrolling zoom on the map widget by using a time-based 150ms cooldown and directional indicators to support both standard scroll wheel mice and Apple Magic Mouse/trackpads.
 
-**Architecture:** Intercept canvas mouse wheel bindings in the map widget and apply a normalized delta calculation in a custom event handler function inside the tagger UI.
+**Architecture:** Initialize a scroll timestamp variable, intercept canvas mouse wheel bindings in the map widget, and apply a 150ms throttle with `+1.0`/`-1.0` zoom steps.
 
 **Tech Stack:** Python 3, Tkinter, tkintermapview
 
@@ -16,15 +16,16 @@
 - Modify: `exif_pipeline.py`
 - Modify: `tests/test_exif_pipeline.py`
 
-- [ ] **Step 1: Write a failing test for custom mouse zoom**
+- [ ] **Step 1: Write a failing test for throttled custom mouse zoom**
 
-  Append this test at the end of `tests/test_exif_pipeline.py`:
+  Replace the `test_tagger_app_map_scroll_zoom` test at the end of `tests/test_exif_pipeline.py` with:
 
   ```python
   def test_tagger_app_map_scroll_zoom(tmp_path, monkeypatch):
       from PIL import Image
       import json
       import sys
+      import time
       
       jpg_path = tmp_path / "1990-penza-00001.jpg"
       img = Image.new("RGB", (100, 100), color="red")
@@ -46,8 +47,8 @@
               zoom_calls.append(new_zoom)
           
           app._map.set_zoom = mock_set_zoom
+          app._map.zoom = 10.0
           
-          # Simulate scroll event
           class MockEvent:
               def __init__(self, delta, x, y, num=0):
                   self.delta = delta
@@ -55,43 +56,31 @@
                   self.y = y
                   self.num = num
                   
-          # We need to get the bound function for <MouseWheel> on the canvas
-          # To invoke it, we can call the function bound to "<MouseWheel>" directly or trigger it.
-          # To trigger, we can call the handler registered on canvas.bind("<MouseWheel>")
-          bindings = app._map.canvas.bind("<MouseWheel>")
-          # We can also call the mouse_zoom method directly if we overrode it or registered our custom one.
-          # Let's inspect the binding or invoke the callback directly.
-          # Since tkinter bindings are Tcl functions, it's easier to invoke our custom function if we find it
-          # or we can mock/call the event handler directly if we expose it, or just invoke the callback if it's stored.
-          # Wait, in the implementation we will bind the custom function.
-          # Let's call the actual custom function. We can find it because it's bound.
-          # Alternatively, we can verify that the custom zoom function behaves correctly by triggering it
-          # via event_generate or calling the Tkinter binding function.
-          # Let's use event_generate to trigger a real Tkinter scroll event!
-          # This is the most authentic test.
-          app._map.zoom = 10.0
-          
-          # Generate MouseWheel event with delta=120 (standard mouse wheel scroll on mac)
-          app._map.canvas.event_generate("<MouseWheel>", x=50, y=50, delta=120)
-          app.root.update_idletasks()
+          # 1. First scroll event (standard mouse wheel, delta=120)
+          app._map._custom_mouse_zoom(MockEvent(120, 180, 180))
           
           # Verify standard mouse wheel zoom changes zoom by exactly 1 level
-          # (On mac, original code would do 10.0 + 120*0.1 = 22.0)
-          # With our fix, it should do 10.0 + 1.0 = 11.0
           if sys.platform == "darwin":
               assert len(zoom_calls) == 1
               assert abs(zoom_calls[0] - 11.0) < 0.001
               
+          # 2. Immediate second scroll event (delta=120) -> should be throttled/ignored
+          app._map._custom_mouse_zoom(MockEvent(120, 180, 180))
+          if sys.platform == "darwin":
+              assert len(zoom_calls) == 1  # Still only 1 call
+              
+          # 3. Bypass cooldown using monkeypatch on time.time
           zoom_calls.clear()
+          current_time = time.time()
+          monkeypatch.setattr(time, "time", lambda: current_time + 1.0)
           
-          # Generate MouseWheel event with delta=1 (Apple magic mouse/trackpad scroll)
-          app._map.canvas.event_generate("<MouseWheel>", x=50, y=50, delta=1)
-          app.root.update_idletasks()
+          # Simulate Magic Mouse/Trackpad scroll event (delta=1)
+          app._map._custom_mouse_zoom(MockEvent(1, 180, 180))
           
-          # Verify magic mouse zoom changes zoom by 0.2 levels
+          # Verify magic mouse zoom changes zoom by exactly 1.0 level as well
           if sys.platform == "darwin":
               assert len(zoom_calls) == 1
-              assert abs(zoom_calls[0] - 10.2) < 0.001
+              assert abs(zoom_calls[0] - 11.0) < 0.001
       finally:
           app.destroy()
   ```
@@ -102,53 +91,40 @@
   ```bash
   ~/.venv/bin/python -m pytest tests/test_exif_pipeline.py::test_tagger_app_map_scroll_zoom -v
   ```
-  Expected: FAIL on macOS (since it doesn't scale delta correctly).
+  Expected: FAIL on macOS (since it doesn't throttle or use the new zoom steps).
 
 - [ ] **Step 3: Modify implementation**
 
-  In `exif_pipeline.py` inside `TaggerApp._build_sidebar` (around lines 595-601, right after creating the map widget):
+  In `exif_pipeline.py`:
 
-  Add the custom mouse zoom method and re-bind the scroll events:
+  1. Initialize `_last_scroll_time` in `TaggerApp.__init__` (around lines 507-512):
+     ```python
+              self._last_saved_year = None
+              self._last_saved_month = None
+              self._last_scroll_time = 0.0
+     ```
 
-  ```python
-          # Map widget
-          self._map = tkintermapview.TkinterMapView(loc_frame, width=360, height=360,
-                                                    corner_radius=0)
-          self._map.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
-          self._map.set_tile_server("https://tile.openstreetmap.org/{z}/{x}/{y}.png")
-          self._map.set_position(53.2007, 45.0046)  # default: Penza
-          self._map.set_zoom(6)
-          self._map.add_left_click_map_command(self._on_map_click)
-
-          # Custom macOS scroll-zoom fix
-          def custom_mouse_zoom(event):
-              relative_mouse_x = event.x / self._map.width
-              relative_mouse_y = event.y / self._map.height
-              
-              raw_delta = event.delta
-              if sys.platform == "darwin":
-                  if abs(raw_delta) >= 120:
-                      step = raw_delta / 120.0
-                  else:
-                      step = raw_delta * 0.2
-              elif sys.platform.startswith("win"):
-                  step = raw_delta * 0.01
-              elif event.num == 4:
-                  step = 1.0
-              elif event.num == 5:
-                  step = -1.0
-              else:
-                  step = raw_delta * 0.1
+  2. Update `custom_mouse_zoom` logic inside `TaggerApp._build_sidebar` (around lines 605-630):
+     ```python
+              # Custom macOS scroll-zoom fix
+              def custom_mouse_zoom(event):
+                  now = time.time()
+                  if now - self._last_scroll_time < 0.15:
+                      return  # Cooldown active
+                      
+                  relative_mouse_x = event.x / self._map.width
+                  relative_mouse_y = event.y / self._map.height
                   
-              new_zoom = self._map.zoom + step
-              self._map.set_zoom(new_zoom, relative_pointer_x=relative_mouse_x, relative_pointer_y=relative_mouse_y)
-
-          self._map.canvas.bind("<MouseWheel>", custom_mouse_zoom)
-          self._map.canvas.bind("<Button-4>", custom_mouse_zoom)
-          self._map.canvas.bind("<Button-5>", custom_mouse_zoom)
-  ```
-
-  (Ensure `import sys` is present at the top of the file - it is).
+                  raw_delta = event.delta
+                  if raw_delta == 0:
+                      return
+                      
+                  step = 1.0 if raw_delta > 0 else -1.0
+                  self._last_scroll_time = now
+                  
+                  new_zoom = self._map.zoom + step
+                  self._map.set_zoom(new_zoom, relative_pointer_x=relative_mouse_x, relative_pointer_y=relative_mouse_y)
+     ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -171,5 +147,5 @@
   Run:
   ```bash
   git add exif_pipeline.py tests/test_exif_pipeline.py
-  git commit -m "fix: resolve macOS map scrolling zoom jumps and lack of trackpad responsiveness"
+  git commit -m "fix: throttle macOS map zoom events to support Apple Magic Mouse and trackpads"
   ```
