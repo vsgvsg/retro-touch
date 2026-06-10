@@ -510,7 +510,6 @@ class TaggerApp:
         self._bg_threads: list = []  # track background threads for clean teardown
         self._last_saved_year = None
         self._last_saved_month = None
-        self._last_scroll_time = 0.0
 
         self.root = tk.Tk()
         self.root.title("RetroTouch — EXIF Tagger")
@@ -605,10 +604,6 @@ class TaggerApp:
 
         # Custom macOS scroll-zoom fix
         def custom_mouse_zoom(event):
-            now = time.time()
-            if now - self._last_scroll_time < 0.15:
-                return  # Cooldown active
-                
             relative_mouse_x = event.x / self._map.width
             relative_mouse_y = event.y / self._map.height
             
@@ -616,9 +611,20 @@ class TaggerApp:
             if raw_delta == 0:
                 return
                 
-            step = 1.0 if raw_delta > 0 else -1.0
-            self._last_scroll_time = now
-            
+            if sys.platform == "darwin":
+                if abs(raw_delta) >= 120:
+                    step = raw_delta / 120.0
+                else:
+                    step = raw_delta * 0.1
+            elif sys.platform.startswith("win"):
+                step = raw_delta * 0.01
+            elif event.num == 4:
+                step = 1.0
+            elif event.num == 5:
+                step = -1.0
+            else:
+                step = raw_delta * 0.1
+                
             new_zoom = self._map.zoom + step
             self._map.set_zoom(new_zoom, relative_pointer_x=relative_mouse_x, relative_pointer_y=relative_mouse_y)
 
