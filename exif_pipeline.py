@@ -577,7 +577,7 @@ class TaggerApp:
 
         # ── LOCATION section ──
         loc_frame = ttk.LabelFrame(sb, text="Location", padding=8)
-        loc_frame.pack(fill=tk.X, padx=8, pady=4)
+        loc_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
 
         self._search_var = tk.StringVar()
         search_entry = ttk.Entry(loc_frame, textvariable=self._search_var)
@@ -592,7 +592,7 @@ class TaggerApp:
         self._refresh_chips()
 
         # Map widget
-        self._map = tkintermapview.TkinterMapView(loc_frame, width=360, height=260,
+        self._map = tkintermapview.TkinterMapView(loc_frame, width=360, height=360,
                                                   corner_radius=0)
         self._map.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
         self._map.set_tile_server("https://tile.openstreetmap.org/{z}/{x}/{y}.png")

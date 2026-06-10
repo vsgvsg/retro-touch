@@ -914,3 +914,32 @@ def test_nominatim_client_search_limit_10(monkeypatch):
     client.search("Rome")
     assert "limit=10" in requested_url
 
+
+def test_tagger_app_map_sizing_and_vertical_expansion(tmp_path, monkeypatch):
+    from PIL import Image
+    import json
+    
+    jpg_path = tmp_path / "1990-penza-00001.jpg"
+    img = Image.new("RGB", (100, 100), color="red")
+    img.save(jpg_path, "JPEG")
+    
+    locs_file = tmp_path / "locations.json"
+    locs_file.write_text(json.dumps({"locations": []}), encoding="utf-8")
+    
+    sc_file = tmp_path / "1990-penza-00001.faces.json"
+    sc_file.write_text(json.dumps({}), encoding="utf-8")
+    
+    monkeypatch.setattr(ep.NominatimClient, "_get", lambda self, url: [])
+    
+    app = ep.TaggerApp([str(jpg_path)], extracted_dir=str(tmp_path))
+    try:
+        # Verify map default height is 360
+        assert app._map.height == 360
+        
+        # Verify loc_frame is packed with expansion (expand=True)
+        # We can check pack_info of its master
+        info = app._map.master.pack_info()
+        assert bool(info.get("expand")) is True
+        assert info.get("fill") == "both"
+    finally:
+        app.destroy()
