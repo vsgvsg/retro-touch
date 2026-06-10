@@ -508,6 +508,8 @@ class TaggerApp:
         self._photo_img = None     # keep reference to avoid GC
         self._pin = None           # current map marker
         self._bg_threads: list = []  # track background threads for clean teardown
+        self._last_saved_year = None
+        self._last_saved_month = None
 
         self.root = tk.Tk()
         self.root.title("RetroTouch — EXIF Tagger")
@@ -792,6 +794,13 @@ class TaggerApp:
             months = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
                       "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
             self._month_var.set(months[month] if month else "")
+        elif getattr(self, "_last_saved_year", None) is not None:
+            self._year_var.set(str(self._last_saved_year))
+            self._month_var.set(self._last_saved_month or "")
+            year, hint = parse_filename(pathlib.Path(self.photos[self.idx]).name)
+            if hint:
+                self._search_var.set(hint)
+                self._bg_run(self._search_and_fly, hint)
         else:
             year, hint = parse_filename(pathlib.Path(self.photos[self.idx]).name)
             self._year_var.set(str(year) if year else "")
@@ -890,6 +899,8 @@ class TaggerApp:
         months = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
                   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
         month = months.index(month_str) if month_str in months[1:] else None
+        self._last_saved_year = year
+        self._last_saved_month = month_str
 
         if self._lat is None:
             return  # no location — don't save

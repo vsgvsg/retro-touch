@@ -978,3 +978,48 @@ def test_tagger_app_shortcuts_button(tmp_path, monkeypatch):
     finally:
         app.destroy()
 
+
+def test_tagger_app_date_propagation(tmp_path, monkeypatch):
+    from PIL import Image
+    import json
+    
+    # Create two photos
+    jpg1 = tmp_path / "img1.jpg"
+    jpg2 = tmp_path / "img2.jpg"
+    for p in (jpg1, jpg2):
+        img = Image.new("RGB", (100, 100), color="blue")
+        img.save(p, "JPEG")
+        
+    locs_file = tmp_path / "locations.json"
+    locs_file.write_text(json.dumps({"locations": []}), encoding="utf-8")
+    
+    # Mock geocoder and reverse geocode
+    monkeypatch.setattr(ep.NominatimClient, "_get", lambda self, url: [])
+    
+    app = ep.TaggerApp([str(jpg1), str(jpg2)], extracted_dir=str(tmp_path))
+    try:
+        # Set manual date
+        app._year_var.set("1995")
+        app._month_var.set("Jan")
+        
+        # Set location so it can be saved
+        app._lat = 1.0
+        app._lng = 2.0
+        app._city = "City"
+        app._state = "State"
+        app._country = "Country"
+        app._display_name = "City, State, Country"
+        
+        # Save & Next
+        app._save_and_next()
+        
+        # Verify the app advanced to photo 2
+        assert app.idx == 1
+        
+        # Verify photo 2 defaults to the previous manually entered year and month
+        assert app._year_var.get() == "1995"
+        assert app._month_var.get() == "Jan"
+    finally:
+        app.destroy()
+
+
