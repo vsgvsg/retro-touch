@@ -161,7 +161,7 @@ class NominatimClient:
         if query in self._cache:
             return self._cache[query]
         params = urllib.parse.urlencode({"q": query, "format": "json",
-                                         "addressdetails": 1, "limit": 5})
+                                         "addressdetails": 1, "limit": 10})
         try:
             results = self._get(f"{self.BASE}/search?{params}")
         except Exception:

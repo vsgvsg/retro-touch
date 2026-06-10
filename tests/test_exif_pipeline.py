@@ -902,15 +902,15 @@ def test_tagger_app_navigation(tmp_path, monkeypatch):
         app.destroy()
 
 
-
-
-
-
-
-
-
-
-
-
-
+def test_nominatim_client_search_limit_10(monkeypatch):
+    from exif_pipeline import NominatimClient
+    client = NominatimClient()
+    requested_url = ""
+    def mock_get(url):
+        nonlocal requested_url
+        requested_url = url
+        return []
+    monkeypatch.setattr(client, "_get", mock_get)
+    client.search("Rome")
+    assert "limit=10" in requested_url
 
