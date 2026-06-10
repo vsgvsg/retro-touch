@@ -943,3 +943,38 @@ def test_tagger_app_map_sizing_and_vertical_expansion(tmp_path, monkeypatch):
         assert info.get("fill") == "both"
     finally:
         app.destroy()
+
+
+def test_tagger_app_shortcuts_button(tmp_path, monkeypatch):
+    from PIL import Image
+    import json
+    
+    jpg_path = tmp_path / "1990-penza-00001.jpg"
+    img = Image.new("RGB", (100, 100), color="red")
+    img.save(jpg_path, "JPEG")
+    
+    locs_file = tmp_path / "locations.json"
+    locs_file.write_text(json.dumps({"locations": []}), encoding="utf-8")
+    
+    sc_file = tmp_path / "1990-penza-00001.faces.json"
+    sc_file.write_text(json.dumps({}), encoding="utf-8")
+    
+    called = False
+    def mock_show_shortcuts(self):
+        nonlocal called
+        called = True
+    monkeypatch.setattr(ep.TaggerApp, "_show_shortcuts", mock_show_shortcuts)
+    monkeypatch.setattr(ep.NominatimClient, "_get", lambda self, url: [])
+    
+    app = ep.TaggerApp([str(jpg_path)], extracted_dir=str(tmp_path))
+    try:
+        # Verify the shortcuts button exists
+        assert hasattr(app, "_shortcuts_btn")
+        assert app._shortcuts_btn.cget("text") == "?"
+        
+        # Verify click invokes show_shortcuts
+        app._shortcuts_btn.invoke()
+        assert called is True
+    finally:
+        app.destroy()
+

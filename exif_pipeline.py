@@ -608,10 +608,13 @@ class TaggerApp:
         # Buttons
         btn_row = ttk.Frame(sb)
         btn_row.pack(fill=tk.X, padx=8, pady=8)
-        ttk.Button(btn_row, text="✓ Save & Next", style="Accent.TButton",
-                   command=self._save_and_next).pack(side=tk.LEFT, expand=True, fill=tk.X)
+        self._shortcuts_btn = ttk.Button(btn_row, text="?", width=3,
+                                         command=self._show_shortcuts)
+        self._shortcuts_btn.pack(side=tk.RIGHT, padx=(4, 0))
         ttk.Button(btn_row, text="Skip →",
                    command=self._next).pack(side=tk.RIGHT, padx=(4, 0))
+        ttk.Button(btn_row, text="✓ Save & Next", style="Accent.TButton",
+                   command=self._save_and_next).pack(side=tk.LEFT, expand=True, fill=tk.X)
 
         # Internal location state
         self._lat = None
