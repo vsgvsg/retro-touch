@@ -239,13 +239,17 @@ def test_nominatim_client_reverse(monkeypatch):
     from exif_pipeline import NominatimClient
     client = NominatimClient()
     
+    requested_url = ""
     def mock_get(url):
+        nonlocal requested_url
+        requested_url = url
         return {"address": {"city": "Penza"}}
         
     monkeypatch.setattr(client, "_get", mock_get)
     
     res = client.reverse(53.2007, 45.0046)
     assert res == {"address": {"city": "Penza"}}
+    assert "accept-language=en" in requested_url
 
 def test_location_cache_recording(tmp_path):
     from exif_pipeline import LocationCache
@@ -913,6 +917,7 @@ def test_nominatim_client_search_limit_10(monkeypatch):
     monkeypatch.setattr(client, "_get", mock_get)
     client.search("Rome")
     assert "limit=10" in requested_url
+    assert "accept-language=en" in requested_url
 
 
 def test_tagger_app_map_sizing_and_vertical_expansion(tmp_path, monkeypatch):

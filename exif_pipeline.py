@@ -161,7 +161,8 @@ class NominatimClient:
         if query in self._cache:
             return self._cache[query]
         params = urllib.parse.urlencode({"q": query, "format": "json",
-                                         "addressdetails": 1, "limit": 10})
+                                         "addressdetails": 1, "limit": 10,
+                                         "accept-language": "en"})
         try:
             results = self._get(f"{self.BASE}/search?{params}")
         except Exception:
@@ -179,7 +180,8 @@ class NominatimClient:
         if not (-90.0 <= lat <= 90.0) or not (-180.0 <= lng <= 180.0):
             return None
         params = urllib.parse.urlencode({"lat": lat, "lon": lng,
-                                         "format": "json", "addressdetails": 1})
+                                         "format": "json", "addressdetails": 1,
+                                         "accept-language": "en"})
         try:
             return self._get(f"{self.BASE}/reverse?{params}")
         except Exception:
