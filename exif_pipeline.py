@@ -445,14 +445,14 @@ def cmd_report(extracted_dir: str = "extracted") -> None:
     print(f"  {untagged:4d} untagged                   {untagged*100//max(total,1):3d}%")
 
 # ── Shared theme (copied from face_pipeline.py — no cross-import) ──────────
-ACCENT   = "#5e9cf5"
-BG       = "#1e1e2e"
-SURFACE  = "#2a2a3d"
-TEXT     = "#cdd6f4"
-MUTED    = "#6c7086"
-GREEN    = "#a6e3a1"
-AMBER    = "#f9e2af"
-RED      = "#f38ba8"
+ACCENT   = "#5a6cf0"
+BG       = "#fafaff"
+SURFACE  = "#ffffff"
+TEXT     = "#1a1a2e"
+MUTED    = "#7a7a88"
+GREEN    = "#2faf6a"
+AMBER    = "#d8a23a"
+RED      = "#ff6b6b"
 STATE_COLORS = {"tagged": GREEN, "current": ACCENT, "skipped": MUTED, "default": SURFACE}
 
 
@@ -465,17 +465,40 @@ def _install_theme(root: tk.Tk) -> None:
     except tk.TclError:
         pass
     style.configure(".", background=BG, foreground=TEXT, fieldbackground=SURFACE,
-                    font=("Helvetica", 12))
-    style.configure("TButton", background=SURFACE, foreground=TEXT, padding=6)
-    style.map("TButton", background=[("active", ACCENT)], foreground=[("active", BG)])
-    style.configure("Accent.TButton", background=ACCENT, foreground=BG)
-    style.map("Accent.TButton", background=[("active", "#4a8ae8")], foreground=[("active", BG)])
-    style.configure("TLabel", background=BG, foreground=TEXT)
+                    font=("TkDefaultFont", 11))
     style.configure("TFrame", background=BG)
-    style.configure("TEntry", fieldbackground=SURFACE, foreground=TEXT)
+    style.configure("TLabel", background=BG, foreground=TEXT)
+    style.configure("Sub.TLabel", background=BG, foreground=MUTED)
+    style.configure("Title.TLabel", background=BG, foreground=TEXT,
+                    font=("TkDefaultFont", 14, "bold"))
+    style.configure("TButton", padding=(12, 6), relief="flat",
+                    background=SURFACE, foreground=TEXT)
+    style.map("TButton", background=[("active", "#f0f0f8")])
+    style.configure("Accent.TButton", padding=(14, 6), relief="flat",
+                    background=ACCENT, foreground="#ffffff",
+                    font=("TkDefaultFont", 11, "bold"))
+    style.map("Accent.TButton", background=[("active", "#4a5ce0")])
+    style.configure("TEntry", fieldbackground=SURFACE, foreground=TEXT, padding=4)
     style.configure("TCombobox", fieldbackground=SURFACE, foreground=TEXT)
     style.configure("TSpinbox", fieldbackground=SURFACE, foreground=TEXT)
-    style.configure("Horizontal.TProgressbar", background=ACCENT, troughcolor=SURFACE)
+    style.configure("Horizontal.TProgressbar", background=ACCENT, troughcolor="#ececf2")
+    style.configure("TLabelframe", background=BG)
+    style.configure("TLabelframe.Label", background=BG, foreground=TEXT,
+                    font=("TkDefaultFont", 11, "bold"))
+
+    # Set window icon
+    try:
+        import os
+        from PIL import Image, ImageTk
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        icon_path = os.path.join(script_dir, "docs", "icon.png")
+        if os.path.exists(icon_path):
+            img = Image.open(icon_path)
+            icon_img = ImageTk.PhotoImage(img)
+            root._icon_image = icon_img
+            root.iconphoto(False, icon_img)
+    except Exception:
+        pass
 
 
 def load_photo_image(jpg_path: str, max_height: int = 680, max_width: int = 560) -> tk.PhotoImage | None:
@@ -537,7 +560,7 @@ class TaggerApp:
         hdr.pack(fill=tk.X, padx=8, pady=(8, 0))
         ttk.Button(hdr, text="← Prev", command=self._prev).pack(side=tk.LEFT)
         self._title_var = tk.StringVar()
-        ttk.Label(hdr, textvariable=self._title_var, font=("Helvetica", 13, "bold")
+        ttk.Label(hdr, textvariable=self._title_var, style="Title.TLabel"
                   ).pack(side=tk.LEFT, expand=True)
         ttk.Button(hdr, text="Next →", command=self._next).pack(side=tk.RIGHT)
         # Progress bar
@@ -643,6 +666,9 @@ class TaggerApp:
         # Buttons
         btn_row = ttk.Frame(sb)
         btn_row.pack(fill=tk.X, padx=8, pady=8)
+        self._copy_prev_btn = ttk.Button(btn_row, text="Copy Prev",
+                                         command=self._copy_previous)
+        self._copy_prev_btn.pack(side=tk.LEFT, padx=(0, 4))
         self._shortcuts_btn = ttk.Button(btn_row, text="?", width=3,
                                          command=self._show_shortcuts)
         self._shortcuts_btn.pack(side=tk.RIGHT, padx=(4, 0))
@@ -742,6 +768,9 @@ class TaggerApp:
                     self._month_var.set("")
                 elif c == "t":
                     self._search_entry.focus_set()
+                elif c == "c":
+                    if self.idx > 0:
+                        self._copy_previous()
 
         self.root.bind_all("<Key>", on_key)
 
@@ -756,6 +785,7 @@ class TaggerApp:
             ("↑  /  ↓",    "Nudge month"),
             ("m",           "Clear month"),
             ("t",           "Focus location search"),
+            ("c",           "Copy from previous photo"),
             ("Enter",       "Save & Next"),
             ("Esc",         "Skip (no save)"),
             ("[  /  ]",     "Prev / Next photo"),
@@ -794,6 +824,19 @@ class TaggerApp:
 
         # Auto-fill from sidecar or filename
         self._autofill()
+
+        # Enable/disable "Copy Prev" button based on previous photo's sidecar presence
+        if self.idx <= 0:
+            self._copy_prev_btn.configure(state=tk.DISABLED)
+        else:
+            prev_jpg = self.photos[self.idx - 1]
+            prev_stem = pathlib.Path(prev_jpg).stem
+            prev_sc_path = str(self.extracted_dir / f"{prev_stem}.faces.json")
+            prev_sc = load_sidecar(prev_sc_path)
+            if prev_sc and (prev_sc.get("taken") or prev_sc.get("location")):
+                self._copy_prev_btn.configure(state=tk.NORMAL)
+            else:
+                self._copy_prev_btn.configure(state=tk.DISABLED)
 
     def _draw_faces(self):
         """Overlay labeled face boxes on the canvas."""
@@ -974,6 +1017,38 @@ class TaggerApp:
 
     def _next(self):
         self._load_photo(self.idx + 1)
+
+    def _copy_previous(self):
+        if self.idx <= 0:
+            return
+        prev_jpg = self.photos[self.idx - 1]
+        prev_stem = pathlib.Path(prev_jpg).stem
+        prev_sc_path = str(self.extracted_dir / f"{prev_stem}.faces.json")
+        prev_sc = load_sidecar(prev_sc_path)
+        if not prev_sc:
+            return
+
+        # Overwrite taken info if present
+        if prev_sc.get("taken"):
+            taken = prev_sc["taken"]
+            if taken.get("year"):
+                self._year_var.set(str(taken["year"]))
+            month = taken.get("month")
+            months = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+            if month is not None and (1 <= month <= 12):
+                self._month_var.set(months[month])
+            else:
+                self._month_var.set("")
+
+        # Overwrite location info if present
+        if prev_sc.get("location"):
+            loc = prev_sc["location"]
+            self._set_location(
+                loc["lat"], loc["lng"], loc["city"],
+                loc.get("state", ""), loc["country"],
+                loc["display_name"], fly=True
+            )
 
     def _on_progress_click(self, event):
         frac = event.x / self._progress_bar.winfo_width()
