@@ -1,6 +1,6 @@
 # RetroTouch
 
-Four command-line and interactive tools for digitizing, organizing, and restoring scanned
+Six command-line and interactive tools for digitizing, organizing, and restoring scanned
 photos:
 
 1. **`split_photos.py`** — split a flatbed scan that contains several photos into
@@ -12,13 +12,15 @@ photos:
 4. **`restore_photos.py`** — restore old/blurry photos, reconstructing faces
    *grounded on a sharper photo of the same person at a similar age* (using the
    labels and ages produced by `face_pipeline.py`).
+5. **`exif_pipeline.py`** — tag photo dates (year/month) and locations (GPS/address) with an interactive OSM map GUI, writing to EXIF/XMP.
+6. **`update_english_locations.py`** — batch-translate location names in sidecars, image tags, and local caches to English using Nominatim geocoding.
 
 Typical flow: scan a stack of photos → `split_photos.py` to get one image per
 photo in `extracted/` → `detect_duplicates.py` to clean up duplicate crops → `face_pipeline.py` to find, label, and age the people in
-them → `restore_photos.py` to enhance the photos with identity-grounded faces.
+them → `exif_pipeline.py` to tag dates and locations → `update_english_locations.py` to translate location names to English (if needed) → `restore_photos.py` to enhance the photos with identity-grounded faces.
 
-The four tools never import each other — they communicate only through the JSON
-artifacts under `extracted/`.
+The tools never cross-import — they communicate only through the JSON
+artifacts under `extracted/` (with EXIF/location utilities importing shared IO from `exif_pipeline.py`).
 
 ## Process Workflow
 
@@ -309,7 +311,7 @@ future matches.
 Identify and clean up duplicate images in your extracted photos:
 
 ```bash
-python3 detect_duplicates.py [--dir DIR] [--threshold THRESHOLD] [--dry-run]
+~/.venv/bin/python detect_duplicates.py [--dir DIR] [--threshold THRESHOLD] [--dry-run]
 ```
 
 ### How it works
@@ -328,13 +330,13 @@ labeled, aged faces) and uses it to guide the reconstruction.
 
 ```bash
 # preview the plan for one photo — picks references, no API calls, writes nothing
-python3 restore_photos.py face original-001_01.jpg --dry-run
+~/.venv/bin/python restore_photos.py face original-001_01.jpg --dry-run
 
 # restore just the face region(s) and composite them back into the original
-python3 restore_photos.py face original-001_01.jpg
+~/.venv/bin/python restore_photos.py face original-001_01.jpg
 
 # enhance the whole image, then identity-ground its faces
-python3 restore_photos.py photo original-001_01.jpg
+~/.venv/bin/python restore_photos.py photo original-001_01.jpg
 ```
 
 Outputs go to `extracted/restored/<name>.jpg`, each with a
@@ -366,7 +368,7 @@ The generative work runs on a cloud GPU (Apple Silicon has no CUDA). The default
 
 ```bash
 export REPLICATE_API_TOKEN=...
-python3 restore_photos.py face original-001_01.jpg --provider replicate
+~/.venv/bin/python restore_photos.py face original-001_01.jpg --provider replicate
 ```
 
 > The `ReplicateProvider` model slugs and input keys are the manual-verification
@@ -376,6 +378,39 @@ python3 restore_photos.py face original-001_01.jpg --provider replicate
 
 Useful flags: `--dry-run`, `--age-window N` (default 5), `--sharpness-thresh`,
 `--min-area`, `--provider replicate|fake`, `--out` (default `restored`).
+
+## 5. Tagging dates and locations — `exif_pipeline.py`
+
+Interactive GUI to tag each extracted photo with date (year, optional month) and location (lat/lng coordinates, address details).
+
+```bash
+# launch the interactive GUI
+~/.venv/bin/python exif_pipeline.py tag
+
+# print coverage report
+~/.venv/bin/python exif_pipeline.py report
+```
+
+* **Date & Location Propagation:** Manually entered date and location values automatically propagate as the default for the next untagged photo.
+* **Map & Geocoding:** Integrates OpenStreetMap via `tkintermapview`. Uses Nominatim for geocoding queries in English.
+* **EXIF/XMP Preservation:** Writes EXIF DateTimeOriginal, GPS coordinates, IPTC Person Keywords, and XMP MWG Regions to the `.jpg` image safely using atomic replacement.
+* **Locations Cache:** Maintains `extracted/locations.json` tracking location coordinate usage to display quick-selection chips.
+
+## 6. Translating location names to English — `update_english_locations.py`
+
+A utility script to translate all location metadata stored in sidecars, image EXIF/XMP tags, and the location cache to English:
+
+```bash
+# preview proposed updates without making changes
+~/.venv/bin/python update_english_locations.py --dry-run
+
+# perform translation and write updates
+~/.venv/bin/python update_english_locations.py
+```
+
+* **API Reverse Geocoding:** Queries Nominatim reverse geocoding with English settings for all location coordinates.
+* **Rate-Limit Friendly:** Reuses the geocoding client with a 1.1s rate-limit delay and caches results locally (coalescing within 1000m).
+* **EXIF/XMP Re-sync:** Rewrites EXIF/XMP metadata on matching image files where `exif_written` was `true`.
 
 ## Data layout
 
@@ -389,6 +424,7 @@ extracted/
   faces.npy                    # (N, 512) L2-normalized face embeddings
   faces_index.json             # row -> (image, face_id) + model name
   labels.json                  # {cluster_id: name}, edited via `label`
+  locations.json               # cache of lat/lng -> human name mappings with use counts
   match_report.json            # ranked match candidates per face
   restored/
     original-001_01.jpg          # restored image, written by restore_photos.py
@@ -404,7 +440,7 @@ embeddings are stored L2-normalized so cosine similarity is a plain dot product.
 ## Testing
 
 ```bash
-python3 -m pytest tests/ -q        # or: .venv/bin/python -m pytest tests/ -q
+~/.venv/bin/python -m pytest tests/ -q
 ```
 
 Pure functions (detection geometry, cropping, clustering helpers, embedding/
