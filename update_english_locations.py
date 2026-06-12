@@ -2,7 +2,8 @@ import sys
 import pathlib
 import json
 import os
-from exif_pipeline import NominatimClient, coalesce_location, parse_nominatim_address, load_sidecar, save_sidecar
+import argparse
+from exif_pipeline import NominatimClient, coalesce_location, parse_nominatim_address, load_sidecar, save_sidecar, write_exif_xmp
 
 class TranslationCache:
     def __init__(self, client=None):
@@ -130,3 +131,41 @@ def run_translation(sidecars, locations_path, trans_cache, write_exif_fn, dry_ru
         os.replace(tmp_path, locations_path)
 
     return updates_count
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Translate location names to English in sidecars and locations cache.")
+    parser.add_argument("--dry-run", action="store_true", help="Preview updates without making changes.")
+    parser.add_argument("--dir", default="extracted", help="Directory containing sidecar files.")
+    args = parser.parse_args()
+
+    dir_path = pathlib.Path(args.dir)
+    if not dir_path.exists():
+        print(f"Error: directory '{args.dir}' does not exist.")
+        sys.exit(1)
+
+    sidecars = list(dir_path.glob("*.faces.json"))
+    locations_path = dir_path / "locations.json"
+
+    print(f"Scanning {len(sidecars)} sidecar files in {args.dir}...")
+    if args.dry_run:
+        print("DRY RUN: No files will be modified.")
+
+    trans_cache = TranslationCache()
+    
+    count = run_translation(
+        sidecars=sidecars,
+        locations_path=locations_path,
+        trans_cache=trans_cache,
+        write_exif_fn=write_exif_xmp,
+        dry_run=args.dry_run
+    )
+
+    if args.dry_run:
+        print(f"Dry run complete. Would update {count} sidecar location values.")
+    else:
+        print(f"Translation complete. Updated {count} sidecar location values.")
+    sys.exit(0)
+
+if __name__ == "__main__":
+    main()

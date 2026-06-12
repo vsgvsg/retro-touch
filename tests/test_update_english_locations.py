@@ -109,3 +109,17 @@ def test_translate_sidecars_and_cache(tmp_path):
 
     # Verify EXIF write was called
     mock_write_exif.assert_called_once()
+
+
+def test_cli_main_dry_run(monkeypatch):
+    # Test that main runs and exits cleanly
+    import update_english_locations as uel
+    monkeypatch.setattr("sys.argv", ["update_english_locations.py", "--dry-run"])
+    
+    mock_run = MagicMock(return_value=0)
+    monkeypatch.setattr(uel, "run_translation", mock_run)
+    
+    try:
+        uel.main()
+    except SystemExit as e:
+        assert e.code == 0
