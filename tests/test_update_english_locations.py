@@ -1,5 +1,6 @@
 import pytest
 from unittest.mock import MagicMock
+import json
 import update_english_locations as uel
 
 def test_translate_coordinates_coalesces_and_caches():
@@ -27,3 +28,84 @@ def test_translate_coordinates_coalesces_and_caches():
     assert res1["city"] == "Penza"
     assert res2["city"] == "Penza"
     assert res3["city"] == "Altenburg"
+
+
+def test_translate_sidecars_and_cache(tmp_path):
+    # Setup mock sidecar file
+    sidecar_data = {
+        "image": "test.jpg",
+        "image_size": [100, 100],
+        "faces": [{"label": "Sergey"}],
+        "taken": {"year": 1970},
+        "location": {
+            "lat": 53.2,
+            "lng": 45.0,
+            "display_name": "Пенза, Россия",
+            "city": "Пенза",
+            "state": "Пензенская область",
+            "country": "Россия"
+        },
+        "exif_written": True
+    }
+    sc_file = tmp_path / "test.faces.json"
+    with open(sc_file, "w", encoding="utf-8") as f:
+        json.dump(sidecar_data, f)
+
+    # Touch test.jpg so it exists
+    (tmp_path / "test.jpg").touch()
+
+    # Setup mock locations.json cache
+    loc_cache_data = {
+        "locations": [
+            {
+                "lat": 53.2,
+                "lng": 45.0,
+                "display_name": "Пенза, Россия",
+                "city": "Пенза",
+                "state": "Пензенская область",
+                "country": "Россия",
+                "use_count": 5
+            }
+          ]
+    }
+    loc_file = tmp_path / "locations.json"
+    with open(loc_file, "w", encoding="utf-8") as f:
+        json.dump(loc_cache_data, f)
+
+    # Mock translation cache
+    mock_trans_cache = MagicMock()
+    mock_trans_cache.get_english_location.return_value = {
+        "lat": 53.2,
+        "lng": 45.0,
+        "display_name": "Penza, Russia",
+        "city": "Penza",
+        "state": "Penza Oblast",
+        "country": "Russia"
+    }
+
+    # Mock exif_pipeline.write_exif_xmp to avoid opening real files
+    mock_write_exif = MagicMock(return_value=True)
+
+    # Run translation (non dry-run)
+    updates = uel.run_translation(
+        sidecars=[sc_file],
+        locations_path=loc_file,
+        trans_cache=mock_trans_cache,
+        write_exif_fn=mock_write_exif,
+        dry_run=False
+    )
+
+    # Verify sidecar was modified
+    with open(sc_file, encoding="utf-8") as f:
+        updated_sc = json.load(f)
+    assert updated_sc["location"]["city"] == "Penza"
+    assert updated_sc["location"]["display_name"] == "Penza, Russia"
+
+    # Verify locations.json cache was updated
+    with open(loc_file, encoding="utf-8") as f:
+        updated_locs = json.load(f)
+    assert updated_locs["locations"][0]["city"] == "Penza"
+    assert updated_locs["locations"][0]["use_count"] == 5
+
+    # Verify EXIF write was called
+    mock_write_exif.assert_called_once()
