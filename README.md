@@ -392,9 +392,11 @@ Interactive GUI to tag each extracted photo with date (year, optional month) and
 ```
 
 * **Date & Location Propagation:** Manually entered date and location values automatically propagate as the default for the next untagged photo.
-* **Map & Geocoding:** Integrates OpenStreetMap via `tkintermapview`. Uses Nominatim for geocoding queries in English.
+* **Copy Previous Metadata:** A "Copy Prev" button in the sidebar (and `c`/`C` keybinding) clones the `taken` date and `location` metadata from the previous photo's sidecar, overwriting any current fields on the active photo.
+* **Map & Geocoding:** Integrates OpenStreetMap via `tkintermapview`. Uses Nominatim for geocoding queries in English, with thread-safe request serialization.
 * **EXIF/XMP Preservation:** Writes EXIF DateTimeOriginal, GPS coordinates, IPTC Person Keywords, and XMP MWG Regions to the `.jpg` image safely using atomic replacement.
-* **Locations Cache:** Maintains `extracted/locations.json` tracking location coordinate usage to display quick-selection chips.
+* **Locations Cache & Scrollable Chips:** Maintains `extracted/locations.json` tracking location coordinate usage to display quick-selection chips. The chips are displayed in a horizontally scrollable container with customized scroll speeds (trackpad/Shift-scroll/Linux Button-4/5/6/7) and a scrollbar.
+* **Remove Memorized Locations:** Cmd+Click (macOS) or Ctrl+Click (other systems) on any location chip deletes it from the locations cache and updates the UI list in real-time.
 
 ## 6. Translating location names to English — `update_english_locations.py`
 

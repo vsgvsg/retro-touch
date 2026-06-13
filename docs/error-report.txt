@@ -1,0 +1,37 @@
+# Test Crash Analysis and Resolution
+
+## Symptom
+When running the full test suite (`pytest tests/` or `python -m pytest tests/`), Python crashed with a `Fatal Python error: Segmentation fault` at the beginning of the `test_split_photos` module inside Tkinter's `update()` method:
+
+```
+  File "/usr/local/Cellar/python@3.13/3.13.5/Frameworks/Python.framework/Versions/3.13/lib/python3.13/tkinter/__init__.py", line 1467 in update
+  File "/Users/vsg/Projects/Agents/retro-touch/tests/test_split_photos.py", line 43 in _gui_app
+  File "/Users/vsg/Projects/Agents/retro-touch/tests/test_split_photos.py", line 372 in test_arrow_key_moves_active_box
+```
+
+## Root Cause
+Tkinter is fundamentally designed to have a single `tk.Tk()` root instance per process. On macOS Cocoa, initializing, destroying, and subsequently re-initializing the `tk.Tk()` root window multiple times in the same Python process leaves uncleaned display hook state in Tcl/Tk and Cocoa. 
+When multiple tests across `test_exif_pipeline.py` (which created 11 separate `tk.Tk()` instances) and `test_split_photos.py` ran sequentially in the same process, Cocoa's windowing structures corrupted the event loop, triggering a segmentation fault on the subsequent `update()` call in `test_split_photos.py`.
+
+## Solution
+1. **Shared Tkinter Root Fixture (`tests/conftest.py`):**
+   Introduced a session-scoped `shared_tk_root` fixture and a function-scoped `tk_root` fixture. The `tk_root` fixture:
+   - Recovers and deiconifies the shared root window (making sure it's mapped so that event-generation calls work).
+   - Cleans up any leftover child widgets/frames from the previous test.
+   - Clears widgets and withdraws the window upon test teardown.
+
+2. **Constructor/Destructor Modification:**
+   - Modified `SplitterApp` (in [split_photos.py](file:///Users/vsg/Projects/Agents/retro-touch/split_photos.py)) and `TaggerApp` (in [exif_pipeline.py](file:///Users/vsg/Projects/Agents/retro-touch/exif_pipeline.py)) to accept an optional `root` parameter.
+   - If an external root is provided, they register it and mark `_owns_root = False`.
+   - Updated cleanup methods (like `destroy` in `TaggerApp`) so they do not destroy the shared `root` window but instead only destroy the child widgets they created.
+
+3. **Test Refactoring:**
+   - Updated all GUI tests in [tests/test_split_photos.py](file:///Users/vsg/Projects/Agents/retro-touch/tests/test_split_photos.py) and [tests/test_exif_pipeline.py](file:///Users/vsg/Projects/Agents/retro-touch/tests/test_exif_pipeline.py) to request the `tk_root` fixture and pass it to the app instances.
+   - Replaced `.root.destroy()` calls in the test teardown blocks with safe child-widget destruction loops to keep the shared root intact for the next test.
+
+4. **Headless Environment Safety Gating:**
+   Updated `_tk_usable()` in `test_split_photos.py` to check for display/event loop functionality by attempting a fast, sandboxed `update()` within a subprocess of the current Python executable. This ensures that in completely headless environments with no WindowServer connection, the GUI tests are safely and gracefully skipped instead of causing a crash.
+
+## Verification
+- Individual test suites run and pass cleanly.
+- Full test suite runs 230 tests successfully in under 6 seconds without a crash or segmentation fault.
