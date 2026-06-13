@@ -6,6 +6,10 @@ import glob
 import json
 import os
 import sys
+import warnings
+
+# Suppress FutureWarning from insightface / scikit-image's estimate() deprecation
+warnings.filterwarnings("ignore", category=FutureWarning, message=".*estimate.*")
 
 import numpy as np
 
