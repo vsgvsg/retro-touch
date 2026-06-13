@@ -445,6 +445,10 @@ embeddings are stored L2-normalized so cosine similarity is a plain dot product.
 ~/.venv/bin/python -m pytest tests/ -q
 ```
 
+To prevent macOS Cocoa window-server segmentation faults when running multiple GUI tests sequentially, the test suite uses a shared session-scoped `tk_root` fixture (defined in `tests/conftest.py`) which recycles a single `tk.Tk()` instance. 
+
+Additionally, GUI tests are gated to automatically verify display functionality by executing a quick subprocess test using the current Python executable. In headless environments with no WindowServer connection, the GUI tests are safely skipped to avoid crashes.
+
 Pure functions (detection geometry, cropping, clustering helpers, embedding/
 cosine math, sidecar I/O, the labeler's grid/scale/exclude helpers, age
 bbox-matching, and `restore_photos.py`'s reference selection / sharpness /

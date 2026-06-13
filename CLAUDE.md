@@ -13,7 +13,7 @@ The four are one-off tools; they never cross-import — the JSON and image artif
 - `~/.venv/bin/python detect_duplicates.py [--dir DIR] [--threshold THRESHOLD] [--dry-run]` - run the duplicate detection and cleanup tool.
 - `~/.venv/bin/python face_pipeline.py [detect|cluster|label|ages|match|report|merge]` - run the face metadata detection, clustering, labeling, or matching commands.
 - `~/.venv/bin/python restore_photos.py [face|photo] <photo>` - run identity-grounded photo restoration.
-- `~/.venv/bin/python -m pytest tests/ -q` - run all tests. Use the venv (Homebrew Python 3.13 + Tk 9.0): the GUI tests run there. The system `python3` (3.9) ships Tk 8.5, which SIGABRTs on `Tk()` and pops a macOS crash dialog — under it those tests are auto-skipped (gated on `TkVersion >= 8.6`), so `~/.venv/bin/python -m pytest` still passes but doesn't exercise the GUI. NEVER detect display by calling `Tk()` (even in a subprocess); read `tkinter.TkVersion` instead (opens no window).
+- `~/.venv/bin/python -m pytest tests/ -q` - run all tests. Use the venv (Homebrew Python 3.13 + Tk 9.0): the GUI tests run there. The system `python3` (3.9) ships Tk 8.5, which SIGABRTs on `Tk()` and pops a macOS crash dialog — under it those tests are auto-skipped (gated on `TkVersion >= 8.6`). The GUI tests check display usability via a safe verification subprocess (using the current python executable) to skip automatically on headless environments. Tests share a single session-scoped root window (`tk_root` fixture in `conftest.py`) to prevent macOS Cocoa segmentation faults from multiple `tk.Tk()` instantiations.
 
 ## Duplicate Photo Detection (detect_duplicates.py)
 - Computes a 64-bit dhash for every photo in the directory.
