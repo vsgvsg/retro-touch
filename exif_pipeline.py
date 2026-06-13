@@ -227,6 +227,16 @@ class LocationCache:
     def all_entries(self) -> list:
         return list(self._data)
 
+    def remove(self, entry: dict):
+        """Remove a location entry from the cache by matching coordinates."""
+        self._data = [
+            e for e in self._data
+            if not (isinstance(e, dict) and
+                    e.get("lat") == entry.get("lat") and
+                    e.get("lng") == entry.get("lng"))
+        ]
+        self._save()
+
     def record(self, lat: float, lng: float, city: str, state: str,
                country: str, display_name: str) -> dict:
         """Add or update a location entry; return the (possibly updated) entry."""
@@ -613,9 +623,28 @@ class TaggerApp:
         search_entry.bind("<Return>", lambda e: self._do_search())
         self._search_var.trace_add("write", self._on_search_changed)
 
-        # Frequent chips frame
-        self._chips_frame = ttk.Frame(loc_frame)
-        self._chips_frame.pack(fill=tk.X, pady=(4, 0))
+        # Scrollable frequent chips container
+        self._chips_container = ttk.Frame(loc_frame)
+        self._chips_container.pack(fill=tk.X, pady=(4, 0))
+
+        self._chips_canvas = tk.Canvas(self._chips_container, height=40, bg=BG, highlightthickness=0)
+        self._chips_canvas.pack(fill=tk.X, side=tk.TOP, expand=True)
+
+        self._chips_frame = ttk.Frame(self._chips_canvas)
+        self._chips_canvas.create_window((0, 0), window=self._chips_frame, anchor="nw")
+
+        def _on_chips_configure(event):
+            self._chips_canvas.configure(scrollregion=self._chips_canvas.bbox("all"))
+        self._chips_frame.bind("<Configure>", _on_chips_configure)
+
+        def _on_chips_wheel(event):
+            if sys.platform == "darwin":
+                self._chips_canvas.xview_scroll(-1 * event.delta, "units")
+            else:
+                self._chips_canvas.xview_scroll(-1 * (event.delta // 120), "units")
+        self._chips_canvas.bind("<MouseWheel>", _on_chips_wheel)
+        self._chips_frame.bind("<MouseWheel>", _on_chips_wheel)
+
         self._refresh_chips()
 
         # Map widget
@@ -920,11 +949,33 @@ class TaggerApp:
     def _refresh_chips(self):
         for w in self._chips_frame.winfo_children():
             w.destroy()
-        for entry in self.cache.top(8):
+        
+        # Display all entries sorted by frequency
+        entries = sorted(self.cache.all_entries(), key=lambda e: e.get("use_count", 1), reverse=True)
+        
+        def _on_chips_wheel(event):
+            if sys.platform == "darwin":
+                self._chips_canvas.xview_scroll(-1 * event.delta, "units")
+            else:
+                self._chips_canvas.xview_scroll(-1 * (event.delta // 120), "units")
+
+        for entry in entries:
             name = entry.get("city") or entry.get("display_name", "?")
             btn = ttk.Button(self._chips_frame, text=name,
                              command=lambda e=entry: self._apply_cache_entry(e))
             btn.pack(side=tk.LEFT, padx=2, pady=2)
+            
+            # Bind scrolling to the button
+            btn.bind("<MouseWheel>", _on_chips_wheel)
+            
+            # Bind Cmd/Ctrl+Click to delete
+            btn.bind("<Command-Button-1>", lambda e, entry=entry: self._remove_cache_entry(entry))
+            btn.bind("<Control-Button-1>", lambda e, entry=entry: self._remove_cache_entry(entry))
+
+    def _remove_cache_entry(self, entry: dict):
+        self.cache.remove(entry)
+        self._refresh_chips()
+        return "break"
 
     def _apply_cache_entry(self, entry: dict):
         self._set_location(entry["lat"], entry["lng"], entry["city"],

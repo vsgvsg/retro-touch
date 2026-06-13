@@ -1189,5 +1189,72 @@ def test_tagger_app_copy_previous(tmp_path, monkeypatch):
         app.destroy()
 
 
+def test_location_cache_remove(tmp_path):
+    import json
+    locs_file = tmp_path / "locations.json"
+    locs_file.write_text(json.dumps({
+        "locations": [
+            {"lat": 1.0, "lng": 2.0, "city": "A", "state": "", "country": "X", "use_count": 5},
+            {"lat": 3.0, "lng": 4.0, "city": "B", "state": "", "country": "Y", "use_count": 2}
+        ]
+    }), encoding="utf-8")
+    
+    cache = ep.LocationCache(locs_file)
+    assert len(cache.all_entries()) == 2
+    
+    # Remove entry A
+    cache.remove({"lat": 1.0, "lng": 2.0})
+    
+    # Reload and verify
+    cache2 = ep.LocationCache(locs_file)
+    entries = cache2.all_entries()
+    assert len(entries) == 1
+    assert entries[0]["city"] == "B"
+
+
+def test_tagger_app_remove_chip(tmp_path, monkeypatch):
+    from PIL import Image
+    import json
+    
+    jpg_path = tmp_path / "img1.jpg"
+    img = Image.new("RGB", (100, 100), color="blue")
+    img.save(jpg_path, "JPEG")
+    
+    locs_file = tmp_path / "locations.json"
+    locs_file.write_text(json.dumps({
+        "locations": [
+            {"lat": 10.0, "lng": 20.0, "display_name": "Place X", "city": "Place X", "state": "", "country": "US", "use_count": 1}
+        ]
+    }), encoding="utf-8")
+    
+    monkeypatch.setattr(ep.NominatimClient, "_get", lambda self, url: [])
+    
+    import tkintermapview
+    class MockMarker:
+        def delete(self):
+            pass
+    monkeypatch.setattr(tkintermapview.TkinterMapView, "set_marker", lambda self, lat, lng, **kwargs: MockMarker())
+    
+    app = ep.TaggerApp([str(jpg_path)], extracted_dir=str(tmp_path))
+    try:
+        # Check initial chips count (should be 1)
+        children = app._chips_frame.winfo_children()
+        assert len(children) == 1
+        assert children[0].cget("text") == "Place X"
+        
+        # Simulate Cmd+Click removal
+        app._remove_cache_entry({"lat": 10.0, "lng": 20.0})
+        
+        # Check chips count again (should be 0)
+        children = app._chips_frame.winfo_children()
+        assert len(children) == 0
+        
+        # Verify locations.json has no entries
+        assert len(app.cache.all_entries()) == 0
+    finally:
+        app.destroy()
+
+
+
 
 
