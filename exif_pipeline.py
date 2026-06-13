@@ -144,22 +144,25 @@ class NominatimClient:
     def __init__(self):
         self._last = 0.0
         self._cache: dict[str, list] = {}
+        self._lock = threading.RLock()
 
     def _get(self, url: str) -> dict | list:
-        elapsed = time.monotonic() - self._last
-        if elapsed < 1.1:
-            time.sleep(1.1 - elapsed)
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": self.UA})
-            with urllib.request.urlopen(req, timeout=8) as r:
-                return _json.loads(r.read())
-        finally:
-            self._last = time.monotonic()
+        with self._lock:
+            elapsed = time.monotonic() - self._last
+            if elapsed < 1.1:
+                time.sleep(1.1 - elapsed)
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": self.UA})
+                with urllib.request.urlopen(req, timeout=8) as r:
+                    return _json.loads(r.read())
+            finally:
+                self._last = time.monotonic()
 
     def search(self, query: str) -> list:
         """Return list of Nominatim result dicts for query string."""
-        if query in self._cache:
-            return self._cache[query]
+        with self._lock:
+            if query in self._cache:
+                return self._cache[query]
         params = urllib.parse.urlencode({"q": query, "format": "json",
                                          "addressdetails": 1, "limit": 10,
                                          "accept-language": "en"})
@@ -167,7 +170,8 @@ class NominatimClient:
             results = self._get(f"{self.BASE}/search?{params}")
         except Exception:
             return []
-        self._cache[query] = results
+        with self._lock:
+            self._cache[query] = results
         return results
 
     def reverse(self, lat: float, lng: float) -> dict | None:
@@ -642,9 +646,9 @@ class TaggerApp:
         self._chips_frame.bind("<Configure>", _on_chips_configure)
 
         def _on_chips_wheel(event):
-            if event.num == 4:
+            if event.num == 4 or event.num == 6:
                 self._chips_canvas.xview_scroll(-2, "units")
-            elif event.num == 5:
+            elif event.num == 5 or event.num == 7:
                 self._chips_canvas.xview_scroll(2, "units")
             elif event.delta:
                 if sys.platform == "darwin":
@@ -659,11 +663,15 @@ class TaggerApp:
         self._chips_canvas.bind("<Shift-MouseWheel>", _on_chips_wheel)
         self._chips_canvas.bind("<Button-4>", _on_chips_wheel)
         self._chips_canvas.bind("<Button-5>", _on_chips_wheel)
+        self._chips_canvas.bind("<Button-6>", _on_chips_wheel)
+        self._chips_canvas.bind("<Button-7>", _on_chips_wheel)
 
         self._chips_frame.bind("<MouseWheel>", _on_chips_wheel)
         self._chips_frame.bind("<Shift-MouseWheel>", _on_chips_wheel)
         self._chips_frame.bind("<Button-4>", _on_chips_wheel)
         self._chips_frame.bind("<Button-5>", _on_chips_wheel)
+        self._chips_frame.bind("<Button-6>", _on_chips_wheel)
+        self._chips_frame.bind("<Button-7>", _on_chips_wheel)
 
         self._refresh_chips()
 
@@ -817,7 +825,7 @@ class TaggerApp:
                     self._month_var.set("")
                 elif c == "t":
                     self._search_entry.focus_set()
-                elif c == "c":
+                elif c.lower() == "c":
                     if self.idx > 0:
                         self._copy_previous()
 
@@ -849,9 +857,25 @@ class TaggerApp:
         win.bind("<Escape>", lambda e: win.destroy())
         win.bind("<Key-Return>", lambda e: win.destroy())
 
+    def _clear_location_state(self):
+        self._lat = None
+        self._lng = None
+        self._city = ""
+        self._state = ""
+        self._country = ""
+        self._display_name = ""
+        self._loc_display.set("")
+        if self._pin:
+            try:
+                self._pin.delete()
+            except Exception:
+                pass
+            self._pin = None
+
     def _load_photo(self, idx: int):
         if not self.photos:
             return
+        self._clear_location_state()
         self.idx = idx % len(self.photos)
         jpg = self.photos[self.idx]
         stem = pathlib.Path(jpg).stem
@@ -955,6 +979,8 @@ class TaggerApp:
 
     def _set_location(self, lat: float, lng: float, city: str, state: str,
                       country: str, display_name: str, fly: bool = False):
+        if self._destroyed:
+            return
         self._lat, self._lng = lat, lng
         self._city, self._state, self._country = city, state, country
         self._display_name = display_name
@@ -974,9 +1000,9 @@ class TaggerApp:
         entries = sorted(self.cache.all_entries(), key=lambda e: e.get("use_count", 1), reverse=True)
         
         def _on_chips_wheel(event):
-            if event.num == 4:
+            if event.num == 4 or event.num == 6:
                 self._chips_canvas.xview_scroll(-2, "units")
-            elif event.num == 5:
+            elif event.num == 5 or event.num == 7:
                 self._chips_canvas.xview_scroll(2, "units")
             elif event.delta:
                 if sys.platform == "darwin":
@@ -998,6 +1024,8 @@ class TaggerApp:
             btn.bind("<Shift-MouseWheel>", _on_chips_wheel)
             btn.bind("<Button-4>", _on_chips_wheel)
             btn.bind("<Button-5>", _on_chips_wheel)
+            btn.bind("<Button-6>", _on_chips_wheel)
+            btn.bind("<Button-7>", _on_chips_wheel)
             
             # Bind Cmd/Ctrl+Click to delete
             btn.bind("<Command-Button-1>", lambda e, entry=entry: self._remove_cache_entry(entry))

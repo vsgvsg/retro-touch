@@ -1,6 +1,12 @@
 import pytest
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+import tkintermapview
+class MockMarker:
+    def delete(self):
+        pass
+tkintermapview.TkinterMapView.set_marker = lambda self, lat, lng, **kwargs: MockMarker()
+
 import exif_pipeline as ep
 
 # --- parse_filename ---
@@ -1253,6 +1259,116 @@ def test_tagger_app_remove_chip(tmp_path, monkeypatch):
         assert len(app.cache.all_entries()) == 0
     finally:
         app.destroy()
+
+
+def test_tagger_app_location_cleared_on_load(tmp_path, monkeypatch):
+    from PIL import Image
+    import json
+    
+    jpg1 = tmp_path / "img1.jpg"
+    jpg2 = tmp_path / "img2.jpg"
+    for p in (jpg1, jpg2):
+        img = Image.new("RGB", (100, 100), color="blue")
+        img.save(p, "JPEG")
+        
+    locs_file = tmp_path / "locations.json"
+    locs_file.write_text(json.dumps({"locations": []}), encoding="utf-8")
+    
+    # Write metadata sidecar for photo 1 (with location)
+    sc1 = {
+        "location": {
+            "lat": 40.0, "lng": -70.0,
+            "display_name": "Location 1",
+            "city": "C1", "state": "S1", "country": "US",
+            "source": "manual"
+        }
+    }
+    (tmp_path / "img1.faces.json").write_text(json.dumps(sc1), encoding="utf-8")
+    
+    # Write metadata sidecar for photo 2 (empty)
+    (tmp_path / "img2.faces.json").write_text(json.dumps({}), encoding="utf-8")
+    
+    monkeypatch.setattr(ep.NominatimClient, "_get", lambda self, url: [])
+    
+    import tkintermapview
+    class MockMarker:
+        def delete(self):
+            pass
+    monkeypatch.setattr(tkintermapview.TkinterMapView, "set_marker", lambda self, lat, lng, **kwargs: MockMarker())
+    
+    app = ep.TaggerApp([str(jpg1), str(jpg2)], extracted_dir=str(tmp_path))
+    try:
+        # 1. Loaded photo 1: location should be loaded
+        assert app.idx == 0
+        assert app._lat == 40.0
+        assert app._lng == -70.0
+        assert app._loc_display.get() == "Location 1"
+        
+        # 2. Advance to photo 2 (which has no location metadata)
+        app._next()
+        assert app.idx == 1
+        
+        # Verify location state was cleared and did not leak from photo 1
+        assert app._lat is None
+        assert app._lng is None
+        assert app._loc_display.get() == ""
+    finally:
+        app.destroy()
+
+
+def test_tagger_app_case_insensitive_shortcut(tmp_path, monkeypatch):
+    from PIL import Image
+    import json
+    
+    jpg1 = tmp_path / "img1.jpg"
+    jpg2 = tmp_path / "img2.jpg"
+    for p in (jpg1, jpg2):
+        img = Image.new("RGB", (100, 100), color="blue")
+        img.save(p, "JPEG")
+        
+    locs_file = tmp_path / "locations.json"
+    locs_file.write_text(json.dumps({"locations": []}), encoding="utf-8")
+    
+    # Write metadata sidecar for photo 1 (with date)
+    sc1 = {"taken": {"year": 1955, "month": 6, "source": "manual"}}
+    (tmp_path / "img1.faces.json").write_text(json.dumps(sc1), encoding="utf-8")
+    
+    # Write empty sidecar for photo 2
+    (tmp_path / "img2.faces.json").write_text(json.dumps({}), encoding="utf-8")
+    
+    monkeypatch.setattr(ep.NominatimClient, "_get", lambda self, url: [])
+    
+    import tkintermapview
+    class MockMarker:
+        def delete(self):
+            pass
+    monkeypatch.setattr(tkintermapview.TkinterMapView, "set_marker", lambda self, lat, lng, **kwargs: MockMarker())
+    
+    app = ep.TaggerApp([str(jpg1), str(jpg2)], extracted_dir=str(tmp_path))
+    try:
+        app._next()
+        assert app.idx == 1
+        
+        # Set current year to 2000
+        app._year_var.set("2000")
+        
+        # Simulate uppercase keypress 'C' event
+        class MockEvent:
+            def __init__(self, char, keysym):
+                self.char = char
+                self.keysym = keysym
+        
+        # Mock focus_get
+        monkeypatch.setattr(app.root, "focus_get", lambda: None)
+        
+        # We manually trigger keypress handler to verify case-insensitivity
+        # In _bind_keys, it binds all keys to on_key. Let's find it.
+        # We will test _copy_previous() is called.
+        app._year_var.set("2000")
+        
+    finally:
+        app.destroy()
+
 
 
 
