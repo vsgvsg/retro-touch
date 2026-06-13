@@ -630,6 +630,10 @@ class TaggerApp:
         self._chips_canvas = tk.Canvas(self._chips_container, height=40, bg=BG, highlightthickness=0)
         self._chips_canvas.pack(fill=tk.X, side=tk.TOP, expand=True)
 
+        self._chips_scrollbar = ttk.Scrollbar(self._chips_container, orient=tk.HORIZONTAL, command=self._chips_canvas.xview)
+        self._chips_scrollbar.pack(fill=tk.X, side=tk.BOTTOM)
+        self._chips_canvas.configure(xscrollcommand=self._chips_scrollbar.set)
+
         self._chips_frame = ttk.Frame(self._chips_canvas)
         self._chips_canvas.create_window((0, 0), window=self._chips_frame, anchor="nw")
 
@@ -638,12 +642,28 @@ class TaggerApp:
         self._chips_frame.bind("<Configure>", _on_chips_configure)
 
         def _on_chips_wheel(event):
-            if sys.platform == "darwin":
-                self._chips_canvas.xview_scroll(-1 * event.delta, "units")
-            else:
-                self._chips_canvas.xview_scroll(-1 * (event.delta // 120), "units")
+            if event.num == 4:
+                self._chips_canvas.xview_scroll(-2, "units")
+            elif event.num == 5:
+                self._chips_canvas.xview_scroll(2, "units")
+            elif event.delta:
+                if sys.platform == "darwin":
+                    if abs(event.delta) < 120:
+                        self._chips_canvas.xview_scroll(-3 * event.delta, "units")
+                    else:
+                        self._chips_canvas.xview_scroll(-1 * int(event.delta / 120 * 6), "units")
+                else:
+                    self._chips_canvas.xview_scroll(-1 * (event.delta // 120) * 2, "units")
+
         self._chips_canvas.bind("<MouseWheel>", _on_chips_wheel)
+        self._chips_canvas.bind("<Shift-MouseWheel>", _on_chips_wheel)
+        self._chips_canvas.bind("<Button-4>", _on_chips_wheel)
+        self._chips_canvas.bind("<Button-5>", _on_chips_wheel)
+
         self._chips_frame.bind("<MouseWheel>", _on_chips_wheel)
+        self._chips_frame.bind("<Shift-MouseWheel>", _on_chips_wheel)
+        self._chips_frame.bind("<Button-4>", _on_chips_wheel)
+        self._chips_frame.bind("<Button-5>", _on_chips_wheel)
 
         self._refresh_chips()
 
@@ -954,10 +974,18 @@ class TaggerApp:
         entries = sorted(self.cache.all_entries(), key=lambda e: e.get("use_count", 1), reverse=True)
         
         def _on_chips_wheel(event):
-            if sys.platform == "darwin":
-                self._chips_canvas.xview_scroll(-1 * event.delta, "units")
-            else:
-                self._chips_canvas.xview_scroll(-1 * (event.delta // 120), "units")
+            if event.num == 4:
+                self._chips_canvas.xview_scroll(-2, "units")
+            elif event.num == 5:
+                self._chips_canvas.xview_scroll(2, "units")
+            elif event.delta:
+                if sys.platform == "darwin":
+                    if abs(event.delta) < 120:
+                        self._chips_canvas.xview_scroll(-3 * event.delta, "units")
+                    else:
+                        self._chips_canvas.xview_scroll(-1 * int(event.delta / 120 * 6), "units")
+                else:
+                    self._chips_canvas.xview_scroll(-1 * (event.delta // 120) * 2, "units")
 
         for entry in entries:
             name = entry.get("city") or entry.get("display_name", "?")
@@ -967,6 +995,9 @@ class TaggerApp:
             
             # Bind scrolling to the button
             btn.bind("<MouseWheel>", _on_chips_wheel)
+            btn.bind("<Shift-MouseWheel>", _on_chips_wheel)
+            btn.bind("<Button-4>", _on_chips_wheel)
+            btn.bind("<Button-5>", _on_chips_wheel)
             
             # Bind Cmd/Ctrl+Click to delete
             btn.bind("<Command-Button-1>", lambda e, entry=entry: self._remove_cache_entry(entry))
