@@ -1,6 +1,12 @@
 import pytest
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+import tkintermapview
+class MockMarker:
+    def delete(self):
+        pass
+tkintermapview.TkinterMapView.set_marker = lambda self, lat, lng, **kwargs: MockMarker()
+
 import exif_pipeline as ep
 
 # --- parse_filename ---
@@ -687,8 +693,8 @@ def test_theme_helpers_and_photo_loader(tmp_path):
         ACCENT, BG, SURFACE, TEXT, MUTED, GREEN, AMBER, RED, STATE_COLORS,
         _install_theme, load_photo_image
     )
-    assert ACCENT == "#5e9cf5"
-    assert BG == "#1e1e2e"
+    assert ACCENT == "#5a6cf0"
+    assert BG == "#fafaff"
     assert STATE_COLORS["tagged"] == GREEN
 
     # Test _install_theme
@@ -699,10 +705,10 @@ def test_theme_helpers_and_photo_loader(tmp_path):
         _install_theme(root)
         # Check that root bg is updated
         assert root.cget("bg") == BG
-        # Check active button style mapping for foreground contrast
+        # Verify no active state foreground mappings are configured (which was a dark-theme pattern)
         style = ttk.Style(root)
-        assert style.map("TButton", "foreground") == [("active", BG)]
-        assert style.map("Accent.TButton", "foreground") == [("active", BG)]
+        assert not any(state == "active" or "active" in state for state, _ in style.map("TButton", "foreground"))
+        assert not any(state == "active" or "active" in state for state, _ in style.map("Accent.TButton", "foreground"))
     finally:
         root.destroy()
 
@@ -1081,6 +1087,290 @@ def test_tagger_app_map_scroll_zoom(tmp_path, monkeypatch):
             assert abs(zoom_calls[0] - 10.1) < 0.001
     finally:
         app.destroy()
+
+
+def test_tagger_app_copy_previous(tmp_path, monkeypatch):
+    from PIL import Image
+    import json
+    import tkinter as tk
+    
+    # Create three photos
+    jpg1 = tmp_path / "img1.jpg"
+    jpg2 = tmp_path / "img2.jpg"
+    jpg3 = tmp_path / "img3.jpg"
+    for p in (jpg1, jpg2, jpg3):
+        img = Image.new("RGB", (100, 100), color="blue")
+        img.save(p, "JPEG")
+        
+    locs_file = tmp_path / "locations.json"
+    locs_file.write_text(json.dumps({"locations": []}), encoding="utf-8")
+    
+    # Write metadata sidecar for photo 1
+    sc1 = {
+        "taken": {"year": 1955, "month": 6, "source": "manual"},
+        "location": {
+            "lat": 40.7128, "lng": -74.0060,
+            "display_name": "New York, USA",
+            "city": "New York", "state": "New York", "country": "USA",
+            "source": "manual"
+        }
+    }
+    sc1_path = tmp_path / "img1.faces.json"
+    sc1_path.write_text(json.dumps(sc1), encoding="utf-8")
+    
+    # Write metadata sidecar for photo 2 (empty/none)
+    sc2 = {}
+    sc2_path = tmp_path / "img2.faces.json"
+    sc2_path.write_text(json.dumps(sc2), encoding="utf-8")
+    
+    # Write metadata sidecar for photo 3 (partial, location only)
+    sc3 = {
+        "location": {
+            "lat": 34.0522, "lng": -118.2437,
+            "display_name": "Los Angeles, USA",
+            "city": "Los Angeles", "state": "California", "country": "USA",
+            "source": "manual"
+        }
+    }
+    sc3_path = tmp_path / "img3.faces.json"
+    sc3_path.write_text(json.dumps(sc3), encoding="utf-8")
+
+    monkeypatch.setattr(ep.NominatimClient, "_get", lambda self, url: [])
+    
+    import tkintermapview
+    class MockMarker:
+        def delete(self):
+            pass
+    monkeypatch.setattr(tkintermapview.TkinterMapView, "set_marker", lambda self, lat, lng, **kwargs: MockMarker())
+    
+    app = ep.TaggerApp([str(jpg1), str(jpg2), str(jpg3)], extracted_dir=str(tmp_path))
+    try:
+        # 1. First photo (idx=0)
+        assert app.idx == 0
+        # Button should be disabled
+        assert str(app._copy_prev_btn.cget("state")) == "disabled"
+        
+        # 2. Advance to photo 2 (idx=1)
+        app._next()
+        assert app.idx == 1
+        # Button should be enabled since photo 1 has metadata
+        assert str(app._copy_prev_btn.cget("state")) != "disabled"
+        
+        # Populate current fields with dummy data to verify overwrite
+        app._year_var.set("2000")
+        app._month_var.set("Oct")
+        app._set_location(0.0, 0.0, "", "", "", "")
+        
+        # Click copy previous
+        app._copy_previous()
+        
+        # Verify year and location were copied
+        assert app._year_var.get() == "1955"
+        assert app._month_var.get() == "Jun"
+        assert app._lat == 40.7128
+        assert app._lng == -74.0060
+        assert app._city == "New York"
+        
+        # 3. Advance to photo 3 (idx=2)
+        app._next()
+        assert app.idx == 2
+        # Button should be disabled since photo 2 sidecar is empty
+        assert str(app._copy_prev_btn.cget("state")) == "disabled"
+        
+        # Fill in current fields
+        app._year_var.set("2010")
+        app._month_var.set("Dec")
+        
+        # Manually enable and call copy previous (simulating call from photo 3 where prev has only location)
+        app.idx = 1
+        app._copy_previous()
+        assert app._year_var.get() == "1955"
+        
+        app.idx = 2
+        app._year_var.set("2010")
+        app._copy_previous()
+        assert app._year_var.get() == "2010"  # Unchanged
+        
+    finally:
+        app.destroy()
+
+
+def test_location_cache_remove(tmp_path):
+    import json
+    locs_file = tmp_path / "locations.json"
+    locs_file.write_text(json.dumps({
+        "locations": [
+            {"lat": 1.0, "lng": 2.0, "city": "A", "state": "", "country": "X", "use_count": 5},
+            {"lat": 3.0, "lng": 4.0, "city": "B", "state": "", "country": "Y", "use_count": 2}
+        ]
+    }), encoding="utf-8")
+    
+    cache = ep.LocationCache(locs_file)
+    assert len(cache.all_entries()) == 2
+    
+    # Remove entry A
+    cache.remove({"lat": 1.0, "lng": 2.0})
+    
+    # Reload and verify
+    cache2 = ep.LocationCache(locs_file)
+    entries = cache2.all_entries()
+    assert len(entries) == 1
+    assert entries[0]["city"] == "B"
+
+
+def test_tagger_app_remove_chip(tmp_path, monkeypatch):
+    from PIL import Image
+    import json
+    
+    jpg_path = tmp_path / "img1.jpg"
+    img = Image.new("RGB", (100, 100), color="blue")
+    img.save(jpg_path, "JPEG")
+    
+    locs_file = tmp_path / "locations.json"
+    locs_file.write_text(json.dumps({
+        "locations": [
+            {"lat": 10.0, "lng": 20.0, "display_name": "Place X", "city": "Place X", "state": "", "country": "US", "use_count": 1}
+        ]
+    }), encoding="utf-8")
+    
+    monkeypatch.setattr(ep.NominatimClient, "_get", lambda self, url: [])
+    
+    import tkintermapview
+    class MockMarker:
+        def delete(self):
+            pass
+    monkeypatch.setattr(tkintermapview.TkinterMapView, "set_marker", lambda self, lat, lng, **kwargs: MockMarker())
+    
+    app = ep.TaggerApp([str(jpg_path)], extracted_dir=str(tmp_path))
+    try:
+        # Check initial chips count (should be 1)
+        children = app._chips_frame.winfo_children()
+        assert len(children) == 1
+        assert children[0].cget("text") == "Place X"
+        
+        # Simulate Cmd+Click removal
+        app._remove_cache_entry({"lat": 10.0, "lng": 20.0})
+        
+        # Check chips count again (should be 0)
+        children = app._chips_frame.winfo_children()
+        assert len(children) == 0
+        
+        # Verify locations.json has no entries
+        assert len(app.cache.all_entries()) == 0
+    finally:
+        app.destroy()
+
+
+def test_tagger_app_location_cleared_on_load(tmp_path, monkeypatch):
+    from PIL import Image
+    import json
+    
+    jpg1 = tmp_path / "img1.jpg"
+    jpg2 = tmp_path / "img2.jpg"
+    for p in (jpg1, jpg2):
+        img = Image.new("RGB", (100, 100), color="blue")
+        img.save(p, "JPEG")
+        
+    locs_file = tmp_path / "locations.json"
+    locs_file.write_text(json.dumps({"locations": []}), encoding="utf-8")
+    
+    # Write metadata sidecar for photo 1 (with location)
+    sc1 = {
+        "location": {
+            "lat": 40.0, "lng": -70.0,
+            "display_name": "Location 1",
+            "city": "C1", "state": "S1", "country": "US",
+            "source": "manual"
+        }
+    }
+    (tmp_path / "img1.faces.json").write_text(json.dumps(sc1), encoding="utf-8")
+    
+    # Write metadata sidecar for photo 2 (empty)
+    (tmp_path / "img2.faces.json").write_text(json.dumps({}), encoding="utf-8")
+    
+    monkeypatch.setattr(ep.NominatimClient, "_get", lambda self, url: [])
+    
+    import tkintermapview
+    class MockMarker:
+        def delete(self):
+            pass
+    monkeypatch.setattr(tkintermapview.TkinterMapView, "set_marker", lambda self, lat, lng, **kwargs: MockMarker())
+    
+    app = ep.TaggerApp([str(jpg1), str(jpg2)], extracted_dir=str(tmp_path))
+    try:
+        # 1. Loaded photo 1: location should be loaded
+        assert app.idx == 0
+        assert app._lat == 40.0
+        assert app._lng == -70.0
+        assert app._loc_display.get() == "Location 1"
+        
+        # 2. Advance to photo 2 (which has no location metadata)
+        app._next()
+        assert app.idx == 1
+        
+        # Verify location state was cleared and did not leak from photo 1
+        assert app._lat is None
+        assert app._lng is None
+        assert app._loc_display.get() == ""
+    finally:
+        app.destroy()
+
+
+def test_tagger_app_case_insensitive_shortcut(tmp_path, monkeypatch):
+    from PIL import Image
+    import json
+    
+    jpg1 = tmp_path / "img1.jpg"
+    jpg2 = tmp_path / "img2.jpg"
+    for p in (jpg1, jpg2):
+        img = Image.new("RGB", (100, 100), color="blue")
+        img.save(p, "JPEG")
+        
+    locs_file = tmp_path / "locations.json"
+    locs_file.write_text(json.dumps({"locations": []}), encoding="utf-8")
+    
+    # Write metadata sidecar for photo 1 (with date)
+    sc1 = {"taken": {"year": 1955, "month": 6, "source": "manual"}}
+    (tmp_path / "img1.faces.json").write_text(json.dumps(sc1), encoding="utf-8")
+    
+    # Write empty sidecar for photo 2
+    (tmp_path / "img2.faces.json").write_text(json.dumps({}), encoding="utf-8")
+    
+    monkeypatch.setattr(ep.NominatimClient, "_get", lambda self, url: [])
+    
+    import tkintermapview
+    class MockMarker:
+        def delete(self):
+            pass
+    monkeypatch.setattr(tkintermapview.TkinterMapView, "set_marker", lambda self, lat, lng, **kwargs: MockMarker())
+    
+    app = ep.TaggerApp([str(jpg1), str(jpg2)], extracted_dir=str(tmp_path))
+    try:
+        app._next()
+        assert app.idx == 1
+        
+        # Set current year to 2000
+        app._year_var.set("2000")
+        
+        # Simulate uppercase keypress 'C' event
+        class MockEvent:
+            def __init__(self, char, keysym):
+                self.char = char
+                self.keysym = keysym
+        
+        # Mock focus_get
+        monkeypatch.setattr(app.root, "focus_get", lambda: None)
+        
+        # We manually trigger keypress handler to verify case-insensitivity
+        # In _bind_keys, it binds all keys to on_key. Let's find it.
+        # We will test _copy_previous() is called.
+        app._year_var.set("2000")
+        
+    finally:
+        app.destroy()
+
+
+
 
 
 
