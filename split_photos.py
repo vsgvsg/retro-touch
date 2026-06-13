@@ -651,7 +651,7 @@ class CanvasEditor:
 class SplitterApp:
     """Tkinter app: scan canvas (left) + box list / active-box panel (right)."""
 
-    def __init__(self, scans, out_dir):
+    def __init__(self, scans, out_dir, root=None):
         import tkinter as tk
         from tkinter import ttk
         self.tk = tk
@@ -665,7 +665,12 @@ class SplitterApp:
         self._preview_photo = None
         self._shortcuts_win = None
 
-        self.root = tk.Tk()
+        if root is not None:
+            self.root = root
+            self._owns_root = False
+        else:
+            self.root = tk.Tk()
+            self._owns_root = True
         self.root.title("Photo Scan Splitter")
         self.root.geometry("1180x820")
         self.root.minsize(900, 600)  # keep the bottom action bar reachable

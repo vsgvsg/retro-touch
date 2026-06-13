@@ -533,7 +533,7 @@ def load_photo_image(jpg_path: str, max_height: int = 680, max_width: int = 560)
 class TaggerApp:
     """Interactive EXIF tagger — date + location per photo."""
 
-    def __init__(self, photos: list[str], extracted_dir: str = "extracted"):
+    def __init__(self, photos: list[str], extracted_dir: str = "extracted", root=None):
         """
         Args:
             photos: sorted list of absolute .jpg paths
@@ -550,7 +550,12 @@ class TaggerApp:
         self._last_saved_year = None
         self._last_saved_month = None
 
-        self.root = tk.Tk()
+        if root is not None:
+            self.root = root
+            self._owns_root = False
+        else:
+            self.root = tk.Tk()
+            self._owns_root = True
         self.root.title("RetroTouch — EXIF Tagger")
         self.root.configure(bg=BG)
         _install_theme(self.root)
@@ -760,10 +765,18 @@ class TaggerApp:
         for t in self._bg_threads:
             t.join(timeout=2.0)
         self._bg_threads.clear()
-        try:
-            self.root.destroy()
-        except tk.TclError:
-            pass
+        if getattr(self, "_owns_root", True):
+            try:
+                self.root.destroy()
+            except tk.TclError:
+                pass
+        else:
+            # Just clear our widgets
+            for widget in self.root.winfo_children():
+                try:
+                    widget.destroy()
+                except Exception:
+                    pass
 
     def _safe_after(self, ms, func):
         """Schedule func on the Tk event loop, silently ignoring if root is destroyed."""

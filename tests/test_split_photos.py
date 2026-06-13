@@ -31,14 +31,14 @@ _TK_OK = _tk_usable()
 requires_tk = pytest.mark.skipif(not _TK_OK, reason="no usable Tk (need Tk>=8.6; use .venv)")
 
 
-def _gui_app():
+def _gui_app(root=None):
     """Build a SplitterApp on a tiny synthetic scan (caller is @requires_tk)."""
     d = tempfile.mkdtemp()
     p = os.path.join(d, "t.jpg")
     img = np.full((400, 600, 3), 245, np.uint8)
     img[80:240, 120:380] = 60
     cv2.imwrite(p, img)
-    app = sp.SplitterApp([p], tempfile.mkdtemp())
+    app = sp.SplitterApp([p], tempfile.mkdtemp(), root=root)
     app._show()
     app.root.update()
     return app
@@ -368,8 +368,8 @@ def test_orientation_label_wraps():
 # app binds keys via bind_all, mirroring the face_pipeline GUIs). It does guard
 # that the _on_key -> _move path stays wired.
 @requires_tk
-def test_arrow_key_moves_active_box():
-    app = _gui_app()
+def test_arrow_key_moves_active_box(tk_root):
+    app = _gui_app(root=tk_root)
     try:
         b = app.editor.active_box()
         cx0 = b.center[0]
@@ -377,11 +377,12 @@ def test_arrow_key_moves_active_box():
         app.root.update()
         assert b.center[0] > cx0, "arrow shortcut did not move the active box"
     finally:
-        app.root.destroy()
+        for widget in app.root.winfo_children():
+            widget.destroy()
 
 
 @requires_tk
-def test_tab_and_n_cycle_active_box():
+def test_tab_and_n_cycle_active_box(tk_root):
     # regression: Tab is eaten by Tk focus-traversal (class bindtag) before the
     # bind_all <Key> handler, so it must be bound on the canvas instance tag.
     # 'n' goes through _on_key. Two boxes so cycling is observable.
@@ -391,7 +392,7 @@ def test_tab_and_n_cycle_active_box():
     img[40:180, 60:260] = 60
     img[40:180, 320:540] = 60
     cv2.imwrite(p, img)
-    app = sp.SplitterApp([p], tempfile.mkdtemp())
+    app = sp.SplitterApp([p], tempfile.mkdtemp(), root=tk_root)
     app._show()
     app.root.update()
     try:
@@ -404,15 +405,16 @@ def test_tab_and_n_cycle_active_box():
         app.root.update()
         assert app.editor.active == 0, "n did not advance (wrap) the active box"
     finally:
-        app.root.destroy()
+        for widget in app.root.winfo_children():
+            widget.destroy()
 
 
 @requires_tk
-def test_bracket_keys_rotate_orientation():
+def test_bracket_keys_rotate_orientation(tk_root):
     # regression: punctuation keys were matched on X11 keysym names
     # ("bracketright") but this Tk reports event.keysym/char as "]", so they
     # silently never fired. Match on event.char instead.
-    app = _gui_app()
+    app = _gui_app(root=tk_root)
     try:
         b = app.editor.active_box()
         assert b.orientation == 0
@@ -423,12 +425,13 @@ def test_bracket_keys_rotate_orientation():
         app.root.update()
         assert b.orientation == 180
     finally:
-        app.root.destroy()
+        for widget in app.root.winfo_children():
+            widget.destroy()
 
 
 @requires_tk
-def test_sidebar_rows_have_thumbnails_and_word_orientation():
-    app = _gui_app()
+def test_sidebar_rows_have_thumbnails_and_word_orientation(tk_root):
+    app = _gui_app(root=tk_root)
     try:
         # one thumbnail PhotoImage kept per box (prevents Tk GC)
         assert len(app._row_thumbs) == len(app.boxes) >= 1
@@ -438,12 +441,13 @@ def test_sidebar_rows_have_thumbnails_and_word_orientation():
         app.root.update()
         assert app.orient_var.get() == "right"
     finally:
-        app.root.destroy()
+        for widget in app.root.winfo_children():
+            widget.destroy()
 
 
 @requires_tk
-def test_shortcuts_popover_opens_and_closes():
-    app = _gui_app()
+def test_shortcuts_popover_opens_and_closes(tk_root):
+    app = _gui_app(root=tk_root)
     try:
         assert app._shortcuts_win is None
         app._show_shortcuts()
@@ -456,12 +460,13 @@ def test_shortcuts_popover_opens_and_closes():
         app.root.update()
         assert app._shortcuts_win is None
     finally:
-        app.root.destroy()
+        for widget in app.root.winfo_children():
+            widget.destroy()
 
 
 @requires_tk
-def test_drag_selection_draws_preview():
-    app = _gui_app()
+def test_drag_selection_draws_preview(tk_root):
+    app = _gui_app(root=tk_root)
     try:
         # Initial drag state should be None
         assert app.editor.drag is None
@@ -486,4 +491,5 @@ def test_drag_selection_draws_preview():
         assert app.editor.drag is None
         assert app.editor.drag_current is None
     finally:
-        app.root.destroy()
+        for widget in app.root.winfo_children():
+            widget.destroy()

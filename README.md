@@ -392,9 +392,11 @@ Interactive GUI to tag each extracted photo with date (year, optional month) and
 ```
 
 * **Date & Location Propagation:** Manually entered date and location values automatically propagate as the default for the next untagged photo.
-* **Map & Geocoding:** Integrates OpenStreetMap via `tkintermapview`. Uses Nominatim for geocoding queries in English.
+* **Copy Previous Metadata:** A "Copy Prev" button in the sidebar (and `c`/`C` keybinding) clones the `taken` date and `location` metadata from the previous photo's sidecar, overwriting any current fields on the active photo.
+* **Map & Geocoding:** Integrates OpenStreetMap via `tkintermapview`. Uses Nominatim for geocoding queries in English, with thread-safe request serialization.
 * **EXIF/XMP Preservation:** Writes EXIF DateTimeOriginal, GPS coordinates, IPTC Person Keywords, and XMP MWG Regions to the `.jpg` image safely using atomic replacement.
-* **Locations Cache:** Maintains `extracted/locations.json` tracking location coordinate usage to display quick-selection chips.
+* **Locations Cache & Scrollable Chips:** Maintains `extracted/locations.json` tracking location coordinate usage to display quick-selection chips. The chips are displayed in a horizontally scrollable container with customized scroll speeds (trackpad/Shift-scroll/Linux Button-4/5/6/7) and a scrollbar.
+* **Remove Memorized Locations:** Cmd+Click (macOS) or Ctrl+Click (other systems) on any location chip deletes it from the locations cache and updates the UI list in real-time.
 
 ## 6. Translating location names to English — `update_english_locations.py`
 
@@ -442,6 +444,10 @@ embeddings are stored L2-normalized so cosine similarity is a plain dot product.
 ```bash
 ~/.venv/bin/python -m pytest tests/ -q
 ```
+
+To prevent macOS Cocoa window-server segmentation faults when running multiple GUI tests sequentially, the test suite uses a shared session-scoped `tk_root` fixture (defined in `tests/conftest.py`) which recycles a single `tk.Tk()` instance. 
+
+Additionally, GUI tests are gated to automatically verify display functionality by executing a quick subprocess test using the current Python executable. In headless environments with no WindowServer connection, the GUI tests are safely skipped to avoid crashes.
 
 Pure functions (detection geometry, cropping, clustering helpers, embedding/
 cosine math, sidecar I/O, the labeler's grid/scale/exclude helpers, age

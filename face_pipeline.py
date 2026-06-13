@@ -7,6 +7,20 @@ import json
 import os
 import sys
 
+# Patch skimage.transform.SimilarityTransform.estimate to use from_estimate internally,
+# avoiding the deprecation warning without globally suppressing warnings.
+try:
+    from skimage.transform import SimilarityTransform
+    def _patched_estimate(self, src, dst):
+        t = SimilarityTransform.from_estimate(src, dst)
+        if t:
+            self.params = t.params
+            return True
+        return False
+    SimilarityTransform.estimate = _patched_estimate
+except ImportError:
+    pass
+
 import numpy as np
 
 

@@ -688,7 +688,7 @@ def test_cmd_tag(capsys, tmp_path, monkeypatch):
     assert app_run_called is True
 
 
-def test_theme_helpers_and_photo_loader(tmp_path):
+def test_theme_helpers_and_photo_loader(tmp_path, tk_root):
     from exif_pipeline import (
         ACCENT, BG, SURFACE, TEXT, MUTED, GREEN, AMBER, RED, STATE_COLORS,
         _install_theme, load_photo_image
@@ -700,17 +700,13 @@ def test_theme_helpers_and_photo_loader(tmp_path):
     # Test _install_theme
     import tkinter as tk
     from tkinter import ttk
-    root = tk.Tk()
-    try:
-        _install_theme(root)
-        # Check that root bg is updated
-        assert root.cget("bg") == BG
-        # Verify no active state foreground mappings are configured (which was a dark-theme pattern)
-        style = ttk.Style(root)
-        assert not any(state == "active" or "active" in state for state, _ in style.map("TButton", "foreground"))
-        assert not any(state == "active" or "active" in state for state, _ in style.map("Accent.TButton", "foreground"))
-    finally:
-        root.destroy()
+    _install_theme(tk_root)
+    # Check that root bg is updated
+    assert tk_root.cget("bg") == BG
+    # Verify no active state foreground mappings are configured (which was a dark-theme pattern)
+    style = ttk.Style(tk_root)
+    assert not any(state == "active" or "active" in state for state, _ in style.map("TButton", "foreground"))
+    assert not any(state == "active" or "active" in state for state, _ in style.map("Accent.TButton", "foreground"))
 
     # Test load_photo_image with a non-existent file (returns None)
     assert load_photo_image("non_existent_file.jpg") is None
@@ -721,31 +717,26 @@ def test_theme_helpers_and_photo_loader(tmp_path):
     img = Image.new("RGB", (100, 200), color="red")
     img.save(test_img, "JPEG")
     
-    # We need tk root active to create PhotoImage
-    root2 = tk.Tk()
-    try:
-        photo = load_photo_image(str(test_img), max_height=100, max_width=500)
-        assert photo is not None
-        # Width/height should be scaled (original height 200 -> max_height 100, so scale is 0.5, width becomes 50)
-        assert photo.height() == 100
-        assert photo.width() == 50
+    photo = load_photo_image(str(test_img), max_height=100, max_width=500)
+    assert photo is not None
+    # Width/height should be scaled (original height 200 -> max_height 100, so scale is 0.5, width becomes 50)
+    assert photo.height() == 100
+    assert photo.width() == 50
 
-        # Test load_photo_image with a wide image (constrained by width)
-        test_img_wide = tmp_path / "test_img_wide.jpg"
-        img_wide = Image.new("RGB", (1000, 200), color="blue")
-        img_wide.save(test_img_wide, "JPEG")
-        # default max_width = 560, max_height = 680
-        photo_wide = load_photo_image(str(test_img_wide))
-        assert photo_wide is not None
-        assert photo_wide.width() == 560
-        assert photo_wide.height() == 112
-    finally:
-        root2.destroy()
+    # Test load_photo_image with a wide image (constrained by width)
+    test_img_wide = tmp_path / "test_img_wide.jpg"
+    img_wide = Image.new("RGB", (1000, 200), color="blue")
+    img_wide.save(test_img_wide, "JPEG")
+    # default max_width = 560, max_height = 680
+    photo_wide = load_photo_image(str(test_img_wide))
+    assert photo_wide is not None
+    assert photo_wide.width() == 560
+    assert photo_wide.height() == 112
 
 
 # --- TaggerApp tests (Task 10) ---
 
-def test_tagger_app_photo_loading_and_autofill(tmp_path, monkeypatch):
+def test_tagger_app_photo_loading_and_autofill(tmp_path, monkeypatch, tk_root):
     from PIL import Image
     import json
     
@@ -786,7 +777,7 @@ def test_tagger_app_photo_loading_and_autofill(tmp_path, monkeypatch):
     monkeypatch.setattr(ep.NominatimClient, "_get", lambda self, url: [])
 
     # Instantiate TaggerApp
-    app = ep.TaggerApp([str(jpg_path)], extracted_dir=str(tmp_path))
+    app = ep.TaggerApp([str(jpg_path)], extracted_dir=str(tmp_path), root=tk_root)
     try:
         app._set_location = mock_set_location
         # Manually load the photo (since it was loaded during __init__ with empty stubs, or let's just call it now)
@@ -811,7 +802,7 @@ def test_tagger_app_photo_loading_and_autofill(tmp_path, monkeypatch):
         app.destroy()
 
 
-def test_tagger_app_autofill_filename_parsing(tmp_path, monkeypatch):
+def test_tagger_app_autofill_filename_parsing(tmp_path, monkeypatch, tk_root):
     from PIL import Image
     import json
     
@@ -835,7 +826,7 @@ def test_tagger_app_autofill_filename_parsing(tmp_path, monkeypatch):
         return orig_search_and_fly(self, query)
     monkeypatch.setattr(ep.TaggerApp, "_search_and_fly", tracking_search_and_fly)
 
-    app = ep.TaggerApp([str(jpg_path)], extracted_dir=str(tmp_path))
+    app = ep.TaggerApp([str(jpg_path)], extracted_dir=str(tmp_path), root=tk_root)
     try:
         # Verify default sidecar structure
         assert app._sidecar["image"] == "1985-tbilisi-00002.jpg"
@@ -856,7 +847,7 @@ def test_tagger_app_autofill_filename_parsing(tmp_path, monkeypatch):
         app.destroy()
 
 
-def test_tagger_app_navigation(tmp_path, monkeypatch):
+def test_tagger_app_navigation(tmp_path, monkeypatch, tk_root):
     from PIL import Image
     import json
     
@@ -874,7 +865,7 @@ def test_tagger_app_navigation(tmp_path, monkeypatch):
     # Mock NominatimClient._get to avoid network calls and rate-limit sleep
     monkeypatch.setattr(ep.NominatimClient, "_get", lambda self, url: [])
 
-    app = ep.TaggerApp(jpgs, extracted_dir=str(tmp_path))
+    app = ep.TaggerApp(jpgs, extracted_dir=str(tmp_path), root=tk_root)
     try:
         app._load_photo(0)
         assert app.idx == 0
@@ -926,7 +917,7 @@ def test_nominatim_client_search_limit_10(monkeypatch):
     assert "accept-language=en" in requested_url
 
 
-def test_tagger_app_map_sizing_and_vertical_expansion(tmp_path, monkeypatch):
+def test_tagger_app_map_sizing_and_vertical_expansion(tmp_path, monkeypatch, tk_root):
     from PIL import Image
     import json
     
@@ -942,7 +933,7 @@ def test_tagger_app_map_sizing_and_vertical_expansion(tmp_path, monkeypatch):
     
     monkeypatch.setattr(ep.NominatimClient, "_get", lambda self, url: [])
     
-    app = ep.TaggerApp([str(jpg_path)], extracted_dir=str(tmp_path))
+    app = ep.TaggerApp([str(jpg_path)], extracted_dir=str(tmp_path), root=tk_root)
     try:
         # Verify map default height is 360
         assert app._map.height == 360
@@ -956,7 +947,7 @@ def test_tagger_app_map_sizing_and_vertical_expansion(tmp_path, monkeypatch):
         app.destroy()
 
 
-def test_tagger_app_shortcuts_button(tmp_path, monkeypatch):
+def test_tagger_app_shortcuts_button(tmp_path, monkeypatch, tk_root):
     from PIL import Image
     import json
     
@@ -977,7 +968,7 @@ def test_tagger_app_shortcuts_button(tmp_path, monkeypatch):
     monkeypatch.setattr(ep.TaggerApp, "_show_shortcuts", mock_show_shortcuts)
     monkeypatch.setattr(ep.NominatimClient, "_get", lambda self, url: [])
     
-    app = ep.TaggerApp([str(jpg_path)], extracted_dir=str(tmp_path))
+    app = ep.TaggerApp([str(jpg_path)], extracted_dir=str(tmp_path), root=tk_root)
     try:
         # Verify the shortcuts button exists
         assert hasattr(app, "_shortcuts_btn")
@@ -990,7 +981,7 @@ def test_tagger_app_shortcuts_button(tmp_path, monkeypatch):
         app.destroy()
 
 
-def test_tagger_app_date_propagation(tmp_path, monkeypatch):
+def test_tagger_app_date_propagation(tmp_path, monkeypatch, tk_root):
     from PIL import Image
     import json
     
@@ -1007,7 +998,7 @@ def test_tagger_app_date_propagation(tmp_path, monkeypatch):
     # Mock geocoder and reverse geocode
     monkeypatch.setattr(ep.NominatimClient, "_get", lambda self, url: [])
     
-    app = ep.TaggerApp([str(jpg1), str(jpg2)], extracted_dir=str(tmp_path))
+    app = ep.TaggerApp([str(jpg1), str(jpg2)], extracted_dir=str(tmp_path), root=tk_root)
     try:
         # Set manual date
         app._year_var.set("1995")
@@ -1034,7 +1025,7 @@ def test_tagger_app_date_propagation(tmp_path, monkeypatch):
         app.destroy()
 
 
-def test_tagger_app_map_scroll_zoom(tmp_path, monkeypatch):
+def test_tagger_app_map_scroll_zoom(tmp_path, monkeypatch, tk_root):
     from PIL import Image
     import json
     import sys
@@ -1051,7 +1042,7 @@ def test_tagger_app_map_scroll_zoom(tmp_path, monkeypatch):
     
     monkeypatch.setattr(ep.NominatimClient, "_get", lambda self, url: [])
     
-    app = ep.TaggerApp([str(jpg_path)], extracted_dir=str(tmp_path))
+    app = ep.TaggerApp([str(jpg_path)], extracted_dir=str(tmp_path), root=tk_root)
     try:
         # Mock set_zoom to capture zoom steps
         zoom_calls = []
@@ -1089,7 +1080,7 @@ def test_tagger_app_map_scroll_zoom(tmp_path, monkeypatch):
         app.destroy()
 
 
-def test_tagger_app_copy_previous(tmp_path, monkeypatch):
+def test_tagger_app_copy_previous(tmp_path, monkeypatch, tk_root):
     from PIL import Image
     import json
     import tkinter as tk
@@ -1134,7 +1125,7 @@ def test_tagger_app_copy_previous(tmp_path, monkeypatch):
     }
     sc3_path = tmp_path / "img3.faces.json"
     sc3_path.write_text(json.dumps(sc3), encoding="utf-8")
-
+ 
     monkeypatch.setattr(ep.NominatimClient, "_get", lambda self, url: [])
     
     import tkintermapview
@@ -1143,7 +1134,7 @@ def test_tagger_app_copy_previous(tmp_path, monkeypatch):
             pass
     monkeypatch.setattr(tkintermapview.TkinterMapView, "set_marker", lambda self, lat, lng, **kwargs: MockMarker())
     
-    app = ep.TaggerApp([str(jpg1), str(jpg2), str(jpg3)], extracted_dir=str(tmp_path))
+    app = ep.TaggerApp([str(jpg1), str(jpg2), str(jpg3)], extracted_dir=str(tmp_path), root=tk_root)
     try:
         # 1. First photo (idx=0)
         assert app.idx == 0
@@ -1218,7 +1209,7 @@ def test_location_cache_remove(tmp_path):
     assert entries[0]["city"] == "B"
 
 
-def test_tagger_app_remove_chip(tmp_path, monkeypatch):
+def test_tagger_app_remove_chip(tmp_path, monkeypatch, tk_root):
     from PIL import Image
     import json
     
@@ -1241,7 +1232,7 @@ def test_tagger_app_remove_chip(tmp_path, monkeypatch):
             pass
     monkeypatch.setattr(tkintermapview.TkinterMapView, "set_marker", lambda self, lat, lng, **kwargs: MockMarker())
     
-    app = ep.TaggerApp([str(jpg_path)], extracted_dir=str(tmp_path))
+    app = ep.TaggerApp([str(jpg_path)], extracted_dir=str(tmp_path), root=tk_root)
     try:
         # Check initial chips count (should be 1)
         children = app._chips_frame.winfo_children()
@@ -1261,7 +1252,7 @@ def test_tagger_app_remove_chip(tmp_path, monkeypatch):
         app.destroy()
 
 
-def test_tagger_app_location_cleared_on_load(tmp_path, monkeypatch):
+def test_tagger_app_location_cleared_on_load(tmp_path, monkeypatch, tk_root):
     from PIL import Image
     import json
     
@@ -1296,7 +1287,7 @@ def test_tagger_app_location_cleared_on_load(tmp_path, monkeypatch):
             pass
     monkeypatch.setattr(tkintermapview.TkinterMapView, "set_marker", lambda self, lat, lng, **kwargs: MockMarker())
     
-    app = ep.TaggerApp([str(jpg1), str(jpg2)], extracted_dir=str(tmp_path))
+    app = ep.TaggerApp([str(jpg1), str(jpg2)], extracted_dir=str(tmp_path), root=tk_root)
     try:
         # 1. Loaded photo 1: location should be loaded
         assert app.idx == 0
@@ -1316,7 +1307,7 @@ def test_tagger_app_location_cleared_on_load(tmp_path, monkeypatch):
         app.destroy()
 
 
-def test_tagger_app_case_insensitive_shortcut(tmp_path, monkeypatch):
+def test_tagger_app_case_insensitive_shortcut(tmp_path, monkeypatch, tk_root):
     from PIL import Image
     import json
     
@@ -1344,7 +1335,7 @@ def test_tagger_app_case_insensitive_shortcut(tmp_path, monkeypatch):
             pass
     monkeypatch.setattr(tkintermapview.TkinterMapView, "set_marker", lambda self, lat, lng, **kwargs: MockMarker())
     
-    app = ep.TaggerApp([str(jpg1), str(jpg2)], extracted_dir=str(tmp_path))
+    app = ep.TaggerApp([str(jpg1), str(jpg2)], extracted_dir=str(tmp_path), root=tk_root)
     try:
         app._next()
         assert app.idx == 1
